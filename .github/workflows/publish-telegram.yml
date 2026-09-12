@@ -1,0 +1,41 @@
+name: Publish to Telegram
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'telegram/outbox/**'
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Send new posts
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          if git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            files=$(git diff --name-only --diff-filter=AM "$BEFORE" "$AFTER" -- 'telegram/outbox/*.json' || true)
+          else
+            files=$(git show --pretty="" --name-only --diff-filter=AM "$AFTER" -- 'telegram/outbox/*.json' || true)
+          fi
+          if [ -z "$files" ]; then echo "no new outbox files"; exit 0; fi
+          for f in $files; do
+            [ -f "$f" ] || continue
+            n=$(jq '.posts | length' "$f")
+            echo "sending $n post(s) from $f"
+            for i in $(seq 0 $((n-1))); do
+              text=$(jq -r ".posts[$i]" "$f")
+              resp=$(jq -n --arg c "$TG_CHAT" --arg t "$text" \
+                '{chat_id:$c,text:$t,disable_web_page_preview:true}' \
+                | curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+                  -H 'Content-Type: application/json' -d @-)
+              [ "$(echo "$resp" | jq -r '.ok')" = "true" ] || { echo "FAILED: $resp"; exit 1; }
+              echo "sent post $((i+1))"; sleep 2
+            done
+          done
