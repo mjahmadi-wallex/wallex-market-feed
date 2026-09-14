@@ -109,7 +109,7 @@ const SELECT_SYS = `تو سردبیر دسک بازار والکس هستی. ا�
 
 const WRITE_SYS = `تو دسک بازار والکس هستی، صرافی ارز دیجیتال ایرانی، و برای کانال تلگرام تیم یک پست خبری فارسی می‌نویسی.
 لحن: حرفه‌ای و مسلط مثل یک تریدر کارکشته که تصویر کل بازار را می‌بیند، ولی ساده و همه‌فهم. جدی و بدون هیجان و بزرگ‌نمایی.
-ساختار پست: یک تیتر با یک ایموجی در ابتدا، بعد خبر، بعد چرا مهم است و چه ربطی به بازار و کاربر ایرانی دارد. بین ۲۵۰ تا ۸۰۰ کلمه.
+ساختار پست: یک تیتر با یک ایموجی در ابتدا، بعد خبر، بعد چرا مهم است و چه ربطی به بازار و کاربر ایرانی دارد. حداقل ۲۵۰ کلمه بنویس، ولی کل پست باید در یک پیام تلگرام جا شود، پس زیر ۴۰۹۶ کاراکتر و ترجیحا زیر ۳۵۰۰ کاراکتر بماند (حدود ۲۵۰ تا ۵۵۰ کلمه). تکه‌تکه ننویس.
 برای رسیدن به طول فقط با زمینه و توضیح عمومی و درست بنویس. هیچ عدد، قیمت، نقل‌قول یا ادعای خاصی که در خبر داده‌نشده نساز. اگر اطلاعات خبر کم است، کوتاه‌تر بنویس ولی چیزی از خودت اضافه نکن.
 هرجا اسم ارز آوردی معادل انگلیسی داخل پرانتز بیاور، مثل بیت‌کوین (Bitcoin).
 خط قرمز: قیمت تتر ننویس. سیگنال خرید و فروش و هدف قیمتی و وعده سود ممنوع. نام صرافی رقیب ایرانی نبر. فقط گزارش و تحلیل، نه توصیه معاملاتی.
@@ -117,8 +117,8 @@ const WRITE_SYS = `تو دسک بازار والکس هستی، صرافی ار�
 فقط و فقط متن نهایی پست فارسی را برگردان، بدون توضیح اضافه و بدون JSON.`;
 
 async function selectHot(cands){
-  const list=cands.map(c=>`id=${c.id}\nمنبع: ${c.srcName} | ${ago(c.ts)}\nتیتر: ${c.title}\nخلاصه: ${c.summary||"-"}`).join("\n\n");
-  const content=await llmChat([{role:"system",content:SELECT_SYS},{role:"user",content:list}],1500);
+  const list=cands.map(c=>`id=${c.id} | ${c.srcName} | ${ago(c.ts)} | ${c.title}`).join("\n");
+  const content=await llmChat([{role:"system",content:SELECT_SYS},{role:"user",content:list}],1200);
   const m=content.match(/\[[\s\S]*\]/);if(!m){console.log("[select] no JSON array:",content.slice(0,200));return[];}
   try{return JSON.parse(m[0]).map(String);}catch{return[];}
 }
@@ -169,9 +169,11 @@ async function tgSendLong(full){
     if(!text){continue;}
     let footer=`\n\n🔗 منبع (${c.srcName}): ${c.link}`;
     footer+= c.tsKnown ? `\n🕒 انتشار در منبع: ${tehranStamp(c.ts)} به وقت تهران، حدود ${ago(c.ts)}` : `\n🕒 زمان انتشار در منبع نامشخص`;
-    const full=text+footer;
-    console.log(`\n----- POST (${c.srcName}, ${text.split(/\s+/).length} words) -----\n${full.slice(0,500)}...`);
-    if(!DRY){ try{await tgSendLong(full);sent++;console.log("[sent]");}catch(e){console.log("[send failed]",e.message);} }
+    let bodyText=text; const budget=4096-footer.length-1;
+    if(bodyText.length>budget){ const cut=bodyText.slice(0,budget); const b=Math.max(cut.lastIndexOf("\n"),cut.lastIndexOf(". "),cut.lastIndexOf("، "),cut.lastIndexOf(" ")); bodyText=cut.slice(0, b>200?b:budget).trim()+"…"; }
+    const full=bodyText+footer;
+    console.log(`\n----- POST (${c.srcName}, ${text.split(/\s+/).length} words, ${full.length} chars) -----\n${full.slice(0,400)}...`);
+    if(!DRY){ try{await tgSend(full);sent++;console.log("[sent]");await sleep(1500);}catch(e){console.log("[send failed]",e.message);} }
   }
   console.log(`\nposted ${sent} of ${chosen.length} chosen`);
 
