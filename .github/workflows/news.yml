@@ -1,0 +1,36 @@
+name: Wallex News Monitor
+on:
+  schedule:
+    - cron: '10 * * * *'   # hourly, at :10
+  workflow_dispatch: {}
+permissions:
+  contents: write
+concurrency:
+  group: wallex-news
+  cancel-in-progress: false
+jobs:
+  news:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Monitor sources and post interesting news
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MAX_POSTS: '3'
+        run: node telegram/newsmonitor.js
+      - name: Commit seen-state
+        run: |
+          set -e
+          git config user.name "wallex-desk-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add telegram/state/seen.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+          else
+            git commit -m "news: update seen-state [skip ci]"
+            git push
+          fi
