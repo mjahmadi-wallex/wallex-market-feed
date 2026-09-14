@@ -1,7 +1,7 @@
 name: Wallex News Monitor
 on:
   schedule:
-    - cron: '10 * * * *'   # hourly, at :10
+    - cron: '10 */2 * * *'   # every 2 hours, at :10
   workflow_dispatch:
     inputs:
       ignore_seen:
@@ -25,7 +25,7 @@ jobs:
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MAX_POSTS: '3'
+          MAX_POSTS: '15'
           IGNORE_SEEN: ${{ github.event.inputs.ignore_seen == 'true' && '1' || '0' }}
         run: node telegram/newsmonitor.js
       - name: Commit seen-state
