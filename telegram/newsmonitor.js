@@ -83,21 +83,24 @@ function llmPost(url,body,key){
 }
 function llmUrls(){
   let base=(process.env.LLM_BASE_URL||"").replace(/\/+$/,"");const urls=[];
-  if(base){if(/\/chat\/completions$/.test(base))urls.push(base);else if(/\/v\d+$/.test(base))urls.push(base+"/chat/completions");else urls.push(base+"/v1/chat/completions",base+"/chat/completions");}
+  if(base){if(/\/chat\/completions$/.test(base))urls.push(base);else if(/\/v\d+$/.test(base))urls.push(base+"/chat/completions");else urls.push(base+"/chat/completions",base+"/v1/chat/completions");}
   return [...new Set(urls)];
 }
 async function llmChat(messages,maxTokens){
   const key=process.env.LLM_API_KEY,model=process.env.LLM_MODEL;
   const urls=llmUrls();if(!urls.length)throw new Error("LLM_BASE_URL empty");
-  const body=JSON.stringify({model,temperature:0.5,max_tokens:maxTokens,messages});
+  const mk=noThink=>JSON.stringify(noThink?{model,temperature:0.5,max_tokens:maxTokens,messages,reasoning:{enabled:false}}:{model,temperature:0.5,max_tokens:maxTokens,messages});
   let last="";
   for(const u of urls){
-    let r;try{r=await llmPost(u,body,key);}catch(e){last="req error: "+e.message;console.log(`[llm] request error (${e.message})`);continue;}
-    if(r.status!==200){last=`HTTP ${r.status}: ${r.data.slice(0,150)}`;console.log(`[llm] ${r.status}, trying next`);continue;}
-    let j;try{j=JSON.parse(r.data);}catch{last="not JSON: "+r.data.slice(0,150);continue;}
-    const ch=(j.choices&&j.choices[0])||{};const content=(ch.message&&(ch.message.content||ch.message.reasoning_content))||"";
-    if(!content){console.log(`[llm] EMPTY content; finish=${ch.finish_reason}; raw=${r.data.slice(0,300)}`);last="empty content";continue;}
-    return content;
+    for(const noThink of [true,false]){
+      let r;try{r=await llmPost(u,mk(noThink),key);}catch(e){last="req error: "+e.message;console.log(`[llm] request error (${e.message})`);break;}
+      if(r.status===400 && noThink){console.log("[llm] 400 with reasoning param, retrying without it");continue;}
+      if(r.status!==200){last=`HTTP ${r.status}: ${r.data.slice(0,150)}`;console.log(`[llm] ${r.status}, next endpoint`);break;}
+      let j;try{j=JSON.parse(r.data);}catch{last="not JSON: "+r.data.slice(0,150);break;}
+      const ch=(j.choices&&j.choices[0])||{};const content=(ch.message&&(ch.message.content||ch.message.reasoning_content))||"";
+      if(!content){console.log(`[llm] EMPTY content; finish=${ch.finish_reason}; raw=${r.data.slice(0,300)}`);last="empty content";break;}
+      return content;
+    }
   }
   throw new Error(last||"no endpoint worked");
 }
@@ -119,8 +122,8 @@ const WRITE_SYS = `تو دسک بازار والکس هستی، صرافی ار�
 async function selectHot(cands){
   const list=cands.map(c=>`id=${c.id} | ${c.srcName} | ${ago(c.ts)} | ${c.title}`).join("\n");
   const content=await llmChat([{role:"system",content:SELECT_SYS},{role:"user",content:list}],1200);
-  const m=content.match(/\[[\s\S]*\]/);if(!m){console.log("[select] no JSON array:",content.slice(0,200));return[];}
-  try{return JSON.parse(m[0]).map(String);}catch{return[];}
+  const m=content.match(/\[[\s\S]*\]/);if(!m)throw new Error("select: no JSON array in content");
+  return JSON.parse(m[0]).map(String);
 }
 async function writePost(c){
   const u=`منبع: ${c.srcName}\nتیتر: ${c.title}\nخلاصه: ${c.summary||"-"}`;
@@ -157,9 +160,10 @@ async function tgSendLong(full){
   for(const it of fresh){if((cnt[it.src]||0)>=PER_SOURCE)continue;cnt[it.src]=(cnt[it.src]||0)+1;cands.push(it);if(cands.length>=MAX_CANDIDATES)break;}
   console.log(`new(recent): ${fresh.length}, candidates: ${cands.length}`);
 
-  let order=[];
-  if(cands.length){ try{order=await selectHot(cands);}catch(e){console.log("[error] select:",e.message);} }
-  console.log(`selected ${order.length} (priority order)`);
+  let order=null;
+  if(cands.length){ try{order=await selectHot(cands);}catch(e){console.log("[error] select:",e.message);order=null;} }
+  if(order===null){ order=cands.slice(0,MAX_POSTS).map(c=>String(c.id)); console.log(`[select] LLM failed, fallback to recency: ${order.length}`); }
+  else { console.log(`selected ${order.length} (priority order)`); }
   const byId=Object.fromEntries(cands.map(c=>[String(c.id),c]));
   const chosen=order.map(id=>byId[String(id)]).filter(Boolean).slice(0,MAX_POSTS);
 
