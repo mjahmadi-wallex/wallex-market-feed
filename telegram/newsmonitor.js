@@ -135,8 +135,9 @@ function tgSend(text){
   for (const s of SOURCES) all = all.concat(await fetchSource(s));
   console.log(`fetched ${all.length} items total`);
   // new = not seen
+  const ignoreSeen = process.env.IGNORE_SEEN === "1";
   const cutoff = Date.now() - (+(process.env.MAX_AGE_H||48))*3600e3;
-  const fresh = all.filter(it => !(seen[it.src]||[]).includes(String(it.id)) && it.ts >= cutoff);
+  const fresh = all.filter(it => (ignoreSeen || !(seen[it.src]||[]).includes(String(it.id))) && it.ts >= cutoff);
   fresh.sort((a,b)=> b.ts - a.ts);
   const perSrc = +(process.env.PER_SOURCE||2), cnt = {}, cands = [];
   for (const it of fresh){ if((cnt[it.src]||0) >= perSrc) continue; cnt[it.src]=(cnt[it.src]||0)+1; cands.push(it); if(cands.length>=MAX_CANDIDATES) break; }
@@ -159,6 +160,6 @@ function tgSend(text){
 
   // mark ALL fetched as seen (posted or not), cap 150 per source
   for (const it of all){ (seen[it.src] ||= []); if(!seen[it.src].includes(String(it.id))) seen[it.src].unshift(String(it.id)); seen[it.src] = seen[it.src].slice(0,150); }
-  if (!DRY) saveSeen(seen);
-  console.log("\ndone" + (DRY ? " (dry run, nothing sent/saved)" : ""));
+  if (!DRY && !ignoreSeen) saveSeen(seen);
+  console.log("\ndone" + (DRY ? " (dry run)" : ignoreSeen ? " (ignore-seen test, seen-state not saved)" : ""));
 })();
