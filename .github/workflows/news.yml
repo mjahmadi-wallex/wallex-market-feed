@@ -2,7 +2,12 @@ name: Wallex News Monitor
 on:
   schedule:
     - cron: '10 * * * *'   # hourly, at :10
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      ignore_seen:
+        description: 'Test mode: ignore seen-state and do not save it'
+        type: boolean
+        default: false
 permissions:
   contents: write
 concurrency:
@@ -21,6 +26,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MAX_POSTS: '3'
+          IGNORE_SEEN: ${{ github.event.inputs.ignore_seen == 'true' && '1' || '0' }}
         run: node telegram/newsmonitor.js
       - name: Commit seen-state
         run: |
