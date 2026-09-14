@@ -94,7 +94,7 @@ const SYSTEM = `تو دسک بازار والکس هستی، صرافی ارز �
 function llmPost(url, body, key){
   return new Promise((resolve,reject)=>{
     const u = new URL(url);
-    const req = https.request(u,{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${key}`,"Content-Length":Buffer.byteLength(body)},timeout:60000},
+    const req = https.request(u,{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${key}`,"Content-Length":Buffer.byteLength(body)},timeout:110000},
       res=>{let d="";res.on("data",c=>d+=c);res.on("end",()=>resolve({status:res.statusCode,data:d}));});
     req.on("error",reject); req.on("timeout",()=>req.destroy(new Error("llm timeout"))); req.write(body); req.end();
   });
@@ -110,15 +110,20 @@ async function callLLM(cands){
   }
   if (!urls.length) throw new Error("LLM_BASE_URL is empty");
   const list = cands.map((c,i)=>`(${i+1}) id=${c.id}\nمنبع: ${c.srcName}\nتیتر: ${c.title}\nخلاصه: ${c.summary||"-"}`).join("\n\n");
-  const body = JSON.stringify({ model, temperature: 0.4, max_tokens: 2200,
+  const body = JSON.stringify({ model, temperature: 0.4, max_tokens: 8000,
     messages: [ {role:"system", content: SYSTEM},
       {role:"user", content: `این خبرهای تازه است. حداکثر ${MAX_POSTS} مورد از بهترین‌ها را انتخاب کن و پست بساز.\n\n${list}`} ] });
   let last = "";
   for (const u of [...new Set(urls)]){
-    let r; try { r = await llmPost(u, body, key); } catch(e){ last = e.message; console.log("[llm] request error, trying next"); continue; }
-    if (r.status !== 200){ last = `HTTP ${r.status}: ${r.data.slice(0,120)}`; console.log(`[llm] endpoint returned ${r.status}, trying next`); continue; }
-    let content; try { content = JSON.parse(r.data).choices[0].message.content; } catch(e){ last = "parse error: " + r.data.slice(0,150); console.log("[llm] parse error, trying next"); continue; }
-    const m = content.match(/\[[\s\S]*\]/); return m ? JSON.parse(m[0]) : [];
+    let r; try { r = await llmPost(u, body, key); } catch(e){ last = "request error: "+e.message; console.log(`[llm] request error (${e.message}), trying next`); continue; }
+    if (r.status !== 200){ last = `HTTP ${r.status}: ${r.data.slice(0,150)}`; console.log(`[llm] endpoint returned ${r.status}, trying next`); continue; }
+    let j; try { j = JSON.parse(r.data); } catch(e){ last = "not JSON: " + r.data.slice(0,150); console.log("[llm] response not JSON, trying next"); continue; }
+    const ch = (j.choices && j.choices[0]) || {}; const msg = ch.message || {};
+    const content = msg.content || msg.reasoning_content || "";
+    if (!content){ console.log(`[llm] EMPTY content; finish_reason=${ch.finish_reason}; raw=${r.data.slice(0,400)}`); last = "empty content (finish="+ch.finish_reason+")"; continue; }
+    const m = content.match(/\[[\s\S]*\]/);
+    if (m){ try { return JSON.parse(m[0]); } catch(e){ console.log("[llm] JSON array parse failed:", m[0].slice(0,200)); } }
+    console.log("[llm] no JSON array in content; content head:", content.slice(0,250)); last = "no JSON array";
   }
   throw new Error(last || "no endpoint worked");
 }
