@@ -103,8 +103,12 @@ async function callLLM(cands){
   const key = process.env.LLM_API_KEY, model = process.env.LLM_MODEL;
   let base = (process.env.LLM_BASE_URL||"").replace(/\/+$/,"");
   const urls = [];
-  if (base) urls.push(/\/chat\/completions$/.test(base) ? base : base + "/chat/completions");
-  urls.push("https://api.z.ai/api/paas/v4/chat/completions", "https://api.z.ai/api/openai/v1/chat/completions");
+  if (base){
+    if (/\/chat\/completions$/.test(base)) urls.push(base);
+    else if (/\/v\d+$/.test(base)) urls.push(base + "/chat/completions");
+    else urls.push(base + "/v1/chat/completions", base + "/chat/completions");
+  }
+  if (!urls.length) throw new Error("LLM_BASE_URL is empty");
   const list = cands.map((c,i)=>`(${i+1}) id=${c.id}\nمنبع: ${c.srcName}\nتیتر: ${c.title}\nخلاصه: ${c.summary||"-"}`).join("\n\n");
   const body = JSON.stringify({ model, temperature: 0.4, max_tokens: 2200,
     messages: [ {role:"system", content: SYSTEM},
