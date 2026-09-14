@@ -91,23 +91,32 @@ const SYSTEM = `تو دسک بازار والکس هستی، صرافی ارز �
 خروجی فقط و فقط یک آرایه JSON معتبر، بدون هیچ متن اضافه، به این شکل:
 [{"id":"<همان id ورودی>","text":"<متن کامل پست فارسی>"}]`;
 
+function llmPost(url, body, key){
+  return new Promise((resolve,reject)=>{
+    const u = new URL(url);
+    const req = https.request(u,{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${key}`,"Content-Length":Buffer.byteLength(body)},timeout:60000},
+      res=>{let d="";res.on("data",c=>d+=c);res.on("end",()=>resolve({status:res.statusCode,data:d}));});
+    req.on("error",reject); req.on("timeout",()=>req.destroy(new Error("llm timeout"))); req.write(body); req.end();
+  });
+}
 async function callLLM(cands){
-  const base = process.env.LLM_BASE_URL, key = process.env.LLM_API_KEY, model = process.env.LLM_MODEL;
+  const key = process.env.LLM_API_KEY, model = process.env.LLM_MODEL;
+  let base = (process.env.LLM_BASE_URL||"").replace(/\/+$/,"");
+  const urls = [];
+  if (base) urls.push(/\/chat\/completions$/.test(base) ? base : base + "/chat/completions");
+  urls.push("https://api.z.ai/api/paas/v4/chat/completions", "https://api.z.ai/api/openai/v1/chat/completions");
   const list = cands.map((c,i)=>`(${i+1}) id=${c.id}\nمنبع: ${c.srcName}\nتیتر: ${c.title}\nخلاصه: ${c.summary||"-"}`).join("\n\n");
   const body = JSON.stringify({ model, temperature: 0.4, max_tokens: 2200,
     messages: [ {role:"system", content: SYSTEM},
       {role:"user", content: `این خبرهای تازه است. حداکثر ${MAX_POSTS} مورد از بهترین‌ها را انتخاب کن و پست بساز.\n\n${list}`} ] });
-  const u = new URL(base.replace(/\/$/,"") + "/chat/completions");
-  const raw = await new Promise((resolve,reject)=>{
-    const req = https.request(u,{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${key}`,"Content-Length":Buffer.byteLength(body)},timeout:60000},
-      res=>{let d="";res.on("data",c=>d+=c);res.on("end",()=>resolve(d));});
-    req.on("error",reject); req.on("timeout",()=>req.destroy(new Error("llm timeout"))); req.write(body); req.end();
-  });
-  let content;
-  try { content = JSON.parse(raw).choices[0].message.content; }
-  catch(e){ throw new Error("bad LLM response: " + raw.slice(0,300)); }
-  const m = content.match(/\[[\s\S]*\]/); if (!m) return [];
-  return JSON.parse(m[0]);
+  let last = "";
+  for (const u of [...new Set(urls)]){
+    let r; try { r = await llmPost(u, body, key); } catch(e){ last = e.message; console.log("[llm] request error, trying next"); continue; }
+    if (r.status !== 200){ last = `HTTP ${r.status}: ${r.data.slice(0,120)}`; console.log(`[llm] endpoint returned ${r.status}, trying next`); continue; }
+    let content; try { content = JSON.parse(r.data).choices[0].message.content; } catch(e){ last = "parse error: " + r.data.slice(0,150); console.log("[llm] parse error, trying next"); continue; }
+    const m = content.match(/\[[\s\S]*\]/); return m ? JSON.parse(m[0]) : [];
+  }
+  throw new Error(last || "no endpoint worked");
 }
 
 function tgSend(text){
