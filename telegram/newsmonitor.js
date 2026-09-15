@@ -30,6 +30,23 @@ function tehranStamp(ms){const t=new Date(ms+(3*60+30)*60000);const[jy,jm,jd]=g2
 function ago(ms){const m=Math.max(0,Math.round((Date.now()-ms)/60000));if(m<60)return `${fa(m)} دقیقه پیش`;const h=Math.floor(m/60),r=m%60;if(h<24)return r?`${fa(h)} ساعت و ${fa(r)} دقیقه پیش`:`${fa(h)} ساعت پیش`;return `${fa(Math.floor(h/24))} روز پیش`;}
 function pct(v,dec=1){return fa(Math.abs(v).toFixed(dec)).replace(".","٫");}
 function price(p){const ap=Math.abs(p);let s;if(ap>=1000)s=Math.round(p).toLocaleString("en-US");else if(ap>=1)s=p.toFixed(2);else if(ap>=0.01)s=p.toFixed(4);else s=p.toFixed(8).replace(/0+$/,"").replace(/\.$/,"");return fa(s).replace(".","٫").replace(/,/g,"٬");}
+function capFmt(n){if(n>=1e12)return `${fa((n/1e12).toFixed(2)).replace(".","٫")} تریلیون دلار`;if(n>=1e9)return `${fa((n/1e9).toFixed(0))} میلیارد دلار`;return `${fa(Math.round(n).toLocaleString("en-US")).replace(/,/g,"٬")} دلار`;}
+async function globalPost(){
+  try{
+    const g=JSON.parse((await get("https://api.coingecko.com/api/v3/global")).body).data;
+    const tr=(JSON.parse((await get("https://api.coingecko.com/api/v3/search/trending")).body).coins)||[];
+    const chg=g.market_cap_change_percentage_24h_usd;
+    const L=["🌍 نبض بازار جهانی","",
+      `ارزش کل بازار کریپتو حدود ${capFmt(g.total_market_cap.usd)} است، ${chg>=0?"مثبت":"منفی"} ${pct(Math.abs(chg))} درصد در ۲۴ ساعت گذشته.`,
+      `دامیننس بازار: بیت‌کوین (Bitcoin) ${pct(g.market_cap_percentage.btc)} درصد، اتریوم (Ethereum) ${pct(g.market_cap_percentage.eth)} درصد.`,
+      "","🔥 داغ‌ترین‌های ترند جهانی (CoinGecko)"];
+    const goodTr=tr.map(c=>c.item||{}).filter(it=>it.market_cap_rank&&it.market_cap_rank<=200).slice(0,5);
+    for(const it of goodTr){const d=it.data&&it.data.price_change_percentage_24h&&it.data.price_change_percentage_24h.usd;L.push(`${(d==null||d>=0)?"🟢":"🔴"} ${it.name} (${it.symbol})، رتبه ${fa(it.market_cap_rank)}${d!=null?`، ${d>=0?"مثبت":"منفی"} ${pct(Math.abs(d))} درصد`:""}`);}
+    if(!goodTr.length)L.push("موردی از ترندهای معتبر در این لحظه نبود.");
+    L.push("","📌 نمای کلان بازار جهانی، در کنار قیمت‌های والکس.");
+    return L.join("\n");
+  }catch(e){console.log("[global] failed:",e.message);return null;}
+}
 const RWANAME={USOON:["نفت دیجیتال","Oil"],XAUT:["تترگلد","Gold"],SLVON:["نقره دیجیتال","Silver"],COPXON:["مس دیجیتال","Copper"],PPLTON:["پلاتین دیجیتال","Platinum"],UNGON:["گاز طبیعی دیجیتال","Natural Gas"]};
 function cleanEn(en){en=String(en||"").replace(/\s*\(.*?\)\s*/g," ").trim();if(/^[A-Z0-9 .]+$/.test(en)&&en.replace(/[^A-Za-z]/g,"").length>3)en=en.toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());return en;}
 async function fetch24hAgoPrices(){
@@ -206,6 +223,8 @@ async function tgSendLong(full){
   // ---- price-watch posts (every run), template-based from Wallex markets.json ----
   const pp=await pricePosts(); console.log(`price posts: ${pp.length}`);
   for(const p of pp){ console.log("\n----- PRICE POST -----\n"+p.slice(0,300)); if(!DRY){ try{await tgSend(p);await sleep(1500);console.log("[price sent]");}catch(e){console.log("[price send failed]",e.message);} } }
+  const gp=await globalPost();
+  if(gp){ console.log("\n----- GLOBAL POST -----\n"+gp.slice(0,400)); if(!DRY){ try{await tgSend(gp);await sleep(1500);console.log("[global sent]");}catch(e){console.log("[global send failed]",e.message);} } }
 
   let all=[];for(const s of SOURCES)all=all.concat(await fetchSource(s));
   console.log(`fetched ${all.length} items total`);
