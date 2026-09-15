@@ -47,6 +47,20 @@ async function globalPost(){
     return L.join("\n");
   }catch(e){console.log("[global] failed:",e.message);return null;}
 }
+async function fearGreedPost(){
+  const key=process.env.CMC_API_KEY;if(!key){console.log("[cmc] no key, skip fear&greed");return null;}
+  try{
+    const r=await getH("https://pro-api.coinmarketcap.com/v3/fear-and-greed/latest",{"X-CMC_PRO_API_KEY":key});
+    if(r.status!==200){console.log("[cmc] fear-greed HTTP",r.status,r.body.slice(0,150));return null;}
+    const d=JSON.parse(r.body).data;const v=Number(d.value),cls=d.value_classification;
+    const faCls={"Extreme Fear":"ترس شدید","Fear":"ترس","Neutral":"خنثی","Greed":"طمع","Extreme Greed":"طمع شدید"}[cls]||cls;
+    const emoji=v<25?"😨":v<45?"😟":v<55?"😐":v<75?"🙂":"🤑";
+    return [`${emoji} شاخص ترس و طمع بازار`,"",
+      `شاخص ترس و طمع کریپتو الان روی ${fa(v)} از ۱۰۰ است، یعنی وضعیت «${faCls}».`,
+      "این شاخص فقط حال‌وهوای کلی و احساسات بازار را نشان می‌دهد، نه پیش‌بینی قیمت. در ناحیهٔ ترس بازار محتاط است و در ناحیهٔ طمع پرهیجان.",
+      "","📌 منبع: CoinMarketCap."].join("\n");
+  }catch(e){console.log("[cmc] failed:",e.message);return null;}
+}
 const RWANAME={USOON:["نفت دیجیتال","Oil"],XAUT:["تترگلد","Gold"],SLVON:["نقره دیجیتال","Silver"],COPXON:["مس دیجیتال","Copper"],PPLTON:["پلاتین دیجیتال","Platinum"],UNGON:["گاز طبیعی دیجیتال","Natural Gas"]};
 function cleanEn(en){en=String(en||"").replace(/\s*\(.*?\)\s*/g," ").trim();if(/^[A-Z0-9 .]+$/.test(en)&&en.replace(/[^A-Za-z]/g,"").length>3)en=en.toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());return en;}
 async function fetch24hAgoPrices(){
@@ -105,6 +119,9 @@ function get(url, redirects=0){
     });
     req.on("error",reject);req.on("timeout",()=>req.destroy(new Error("timeout")));req.end();
   });
+}
+function getH(url,extra,redirects=0){
+  return new Promise((resolve,reject)=>{const u=new URL(url);const req=https.request(u,{method:"GET",headers:Object.assign({"User-Agent":"WallexDeskBot/1.0","Accept":"application/json"},extra||{}),timeout:25000},res=>{if([301,302,303,307,308].includes(res.statusCode)&&res.headers.location&&redirects<4){res.resume();return resolve(getH(new URL(res.headers.location,url).href,extra,redirects+1));}const ch=[];res.on("data",c=>ch.push(c));res.on("end",()=>resolve({status:res.statusCode,body:Buffer.concat(ch).toString("utf8")}));});req.on("error",reject);req.on("timeout",()=>req.destroy(new Error("timeout")));req.end();});
 }
 const strip=s=>(s||"").replace(/<!\[CDATA\[|\]\]>/g,"").replace(/<[^>]+>/g," ").replace(/&[a-z#0-9]+;/gi," ").replace(/\s+/g," ").trim();
 function tag(b,n){const m=b.match(new RegExp(`<${n}[^>]*>([\\s\\S]*?)</${n}>`,"i"));return m?m[1]:"";}
@@ -225,6 +242,8 @@ async function tgSendLong(full){
   for(const p of pp){ console.log("\n----- PRICE POST -----\n"+p.slice(0,300)); if(!DRY){ try{await tgSend(p);await sleep(1500);console.log("[price sent]");}catch(e){console.log("[price send failed]",e.message);} } }
   const gp=await globalPost();
   if(gp){ console.log("\n----- GLOBAL POST -----\n"+gp.slice(0,400)); if(!DRY){ try{await tgSend(gp);await sleep(1500);console.log("[global sent]");}catch(e){console.log("[global send failed]",e.message);} } }
+  const fg=await fearGreedPost();
+  if(fg){ console.log("\n----- FEAR&GREED -----\n"+fg); if(!DRY){ try{await tgSend(fg);await sleep(1500);console.log("[cmc sent]");}catch(e){console.log("[cmc send failed]",e.message);} } }
 
   let all=[];for(const s of SOURCES)all=all.concat(await fetchSource(s));
   console.log(`fetched ${all.length} items total`);
