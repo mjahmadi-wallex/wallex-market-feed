@@ -32,23 +32,49 @@ function pct(v,dec=1){return fa(Math.abs(v).toFixed(dec)).replace(".","٫");}
 function price(p){const ap=Math.abs(p);let s;if(ap>=1000)s=Math.round(p).toLocaleString("en-US");else if(ap>=1)s=p.toFixed(2);else if(ap>=0.01)s=p.toFixed(4);else s=p.toFixed(8).replace(/0+$/,"").replace(/\.$/,"");return fa(s).replace(".","٫").replace(/,/g,"٬");}
 const RWANAME={USOON:["نفت دیجیتال","Oil"],XAUT:["تترگلد","Gold"],SLVON:["نقره دیجیتال","Silver"],COPXON:["مس دیجیتال","Copper"],PPLTON:["پلاتین دیجیتال","Platinum"],UNGON:["گاز طبیعی دیجیتال","Natural Gas"]};
 function cleanEn(en){en=String(en||"").replace(/\s*\(.*?\)\s*/g," ").trim();if(/^[A-Z0-9 .]+$/.test(en)&&en.replace(/[^A-Za-z]/g,"").length>3)en=en.toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());return en;}
-function pricePosts(){
+async function fetch24hAgoPrices(){
+  try{
+    const repo=process.env.GITHUB_REPOSITORY||"mjahmadi-wallex/wallex-market-feed";
+    const until=new Date(Date.now()-24*3600e3).toISOString();
+    const r1=await get(`https://api.github.com/repos/${repo}/commits?path=markets.json&until=${until}&per_page=1`);
+    if(r1.status!==200)throw new Error("commits API "+r1.status);
+    const commits=JSON.parse(r1.body);if(!commits.length)throw new Error("no commit 24h ago");
+    const sha=commits[0].sha, when=commits[0].commit.committer.date;
+    const r2=await get(`https://raw.githubusercontent.com/${repo}/${sha}/markets.json`);
+    const j=JSON.parse(r2.body);const p={};for(const m of (j.result&&j.result.markets)||[])p[m.symbol]=m.price;
+    console.log(`[price] 24h-ago snapshot ${when} (${Object.keys(p).length} prices)`);
+    return p;
+  }catch(e){console.log("[price] 24h-ago fetch failed, fallback to change_24h:",e.message);return null;}
+}
+async function pricePosts(){
   let mk;try{mk=JSON.parse(fs.readFileSync(path.join(ROOT,"markets.json"),"utf8"));}catch{console.log("[price] markets.json not found");return[];}
   const M=(mk.result&&mk.result.markets)||[];const by={};for(const m of M)by[m.symbol]=m;
   const num=x=>{if(x===null||x===undefined||x==="")return null;const n=Number(x);return Number.isFinite(n)?n:null;};
+  const prev=await fetch24hAgoPrices();const exact=!!prev;
+  const dOf=m=>{const now=num(m.price);if(now===null)return null;if(prev){const p=num(prev[m.symbol]);if(p!==null&&p>0)return{d:(now-p)/p*100,now};}const c=num(m.change_24h);return c===null?null:{d:c,now};};
   const nm=m=>{const tk=m.base_asset;if(RWANAME[tk])return `${RWANAME[tk][0]} (${RWANAME[tk][1]})`;return `${m.fa_base_asset||tk} (${cleanEn(m.en_base_asset||tk)})`;};
   const mrk=d=>d>=0?"🟢":"🔴",sw=d=>d>=0?"مثبت":"منفی";
-  const majors=["BTC","ETH","SOL","XRP","BNB","DOGE","TON","ADA","TRX","AVAX"];
-  const A=["🪙 رصد قیمت بازار","","قیمت لحظه‌ای و تغییر ۲۴ ساعتهٔ بزرگان بازار در والکس:",""];
-  for(const b of majors){const m=by[b+"USDT"];if(!m)continue;const p=num(m.price),c=num(m.change_24h);if(p===null)continue;A.push(`${mrk(c||0)} ${nm(m)}: ${price(p)} دلار، ${sw(c||0)} ${pct(Math.abs(c||0))} درصد`);}
-  A.push("","📌 قیمت‌ها از بازار دلاری والکس، تغییر نسبت به ۲۴ ساعت گذشته.");
-  const arr=M.filter(m=>m.quote_asset==="USDT"&&(num(m.quote_volume_24h)||0)>50000&&num(m.price)!==null&&num(m.change_24h)!==null&&Math.abs(num(m.change_24h))<=35);
-  const gain=[...arr].sort((a,b)=>num(b.change_24h)-num(a.change_24h)).slice(0,5);
-  const lose=[...arr].sort((a,b)=>num(a.change_24h)-num(b.change_24h)).slice(0,5);
-  const B=["📊 بزرگ‌ترین تغییرات ۲۴ ساعته","","بر مبنای بازارهای دلاری پرگردش والکس.","","📈 بیشترین رشد"];
-  for(const m of gain)B.push(`🟢 ${nm(m)}: ${price(num(m.price))} دلار، مثبت ${pct(num(m.change_24h))} درصد`);
+  const winLabel=exact?"نسبت به همین ساعتِ دیروز":"در ۲۴ ساعت گذشته";
+  const majors=["BTC","ETH","XRP","SOL","BNB","DOGE","TON","ADA","TRX","AVAX","LINK","LTC"];
+  const rwa=["XAUT","SLVON","COPXON","USOON","PPLTON","UNGON"];
+  const A=["🪙 رصد قیمت بازار","",`قیمت و تغییر ${winLabel} در والکس:`,"","💠 بزرگان بازار"];
+  for(const b of majors){const m=by[b+"USDT"];if(!m)continue;const x=dOf(m);if(!x)continue;A.push(`${mrk(x.d)} ${nm(m)}: ${price(x.now)} دلار، ${sw(x.d)} ${pct(Math.abs(x.d))} درصد`);}
+  A.push("","🛢 کالا و RWA");
+  for(const b of rwa){const m=by[b+"USDT"];if(!m)continue;const x=dOf(m);if(!x)continue;A.push(`${mrk(x.d)} ${nm(m)}: ${price(x.now)} دلار، ${sw(x.d)} ${pct(Math.abs(x.d))} درصد`);}
+  A.push("","📌 قیمت‌ها از بازار دلاری والکس.");
+  const rows=[];
+  for(const m of M){
+    if(m.quote_asset!=="USDT")continue;if((num(m.quote_volume_24h)||0)<50000)continue;
+    const x=dOf(m);if(!x)continue;if(Math.abs(x.d)>60)continue;
+    const c=num(m.change_24h);
+    if(exact&&c!==null&&Math.abs(x.d)>=8&&Math.abs(x.d-c)>Math.abs(x.d)*0.5)continue; // computed delta disagrees strongly with feed -> stale 24h-ago price
+    rows.push({m,d:x.d,now:x.now});
+  }
+  const gain=[...rows].sort((a,b)=>b.d-a.d).slice(0,5), lose=[...rows].sort((a,b)=>a.d-b.d).slice(0,5);
+  const B=["📊 بزرگ‌ترین تغییرات ۲۴ ساعته","",`${winLabel}، بر مبنای بازارهای دلاری پرگردش والکس.`,"","📈 بیشترین رشد"];
+  for(const r of gain)B.push(`🟢 ${nm(r.m)}: ${price(r.now)} دلار، مثبت ${pct(r.d)} درصد`);
   B.push("","📉 بیشترین افت");
-  for(const m of lose)B.push(`🔴 ${nm(m)}: ${price(num(m.price))} دلار، منفی ${pct(Math.abs(num(m.change_24h)))} درصد`);
+  for(const r of lose)B.push(`🔴 ${nm(r.m)}: ${price(r.now)} دلار، منفی ${pct(Math.abs(r.d))} درصد`);
   B.push("","📌 همهٔ این بازارها در والکس، اسپات و تعهدی، قابل معامله‌اند.");
   return[A.join("\n"),B.join("\n")];
 }
@@ -178,7 +204,7 @@ async function tgSendLong(full){
 (async()=>{
   const seen=loadSeen();const ignoreSeen=process.env.IGNORE_SEEN==="1";
   // ---- price-watch posts (every run), template-based from Wallex markets.json ----
-  const pp=pricePosts(); console.log(`price posts: ${pp.length}`);
+  const pp=await pricePosts(); console.log(`price posts: ${pp.length}`);
   for(const p of pp){ console.log("\n----- PRICE POST -----\n"+p.slice(0,300)); if(!DRY){ try{await tgSend(p);await sleep(1500);console.log("[price sent]");}catch(e){console.log("[price send failed]",e.message);} } }
 
   let all=[];for(const s of SOURCES)all=all.concat(await fetchSource(s));
