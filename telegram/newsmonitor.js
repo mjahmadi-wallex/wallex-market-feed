@@ -28,13 +28,37 @@ function g2j(gy,gm,gd){const gdm=[0,31,59,90,120,151,181,212,243,273,304,334];le
 const JM=["فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور","مهر","آبان","آذر","دی","بهمن","اسفند"];
 function tehranStamp(ms){const t=new Date(ms+(3*60+30)*60000);const[jy,jm,jd]=g2j(t.getUTCFullYear(),t.getUTCMonth()+1,t.getUTCDate());const hhmm=fa(`${String(t.getUTCHours()).padStart(2,"0")}:${String(t.getUTCMinutes()).padStart(2,"0")}`);return `${hhmm}، ${fa(jd)} ${JM[jm-1]}`;}
 function ago(ms){const m=Math.max(0,Math.round((Date.now()-ms)/60000));if(m<60)return `${fa(m)} دقیقه پیش`;const h=Math.floor(m/60),r=m%60;if(h<24)return r?`${fa(h)} ساعت و ${fa(r)} دقیقه پیش`:`${fa(h)} ساعت پیش`;return `${fa(Math.floor(h/24))} روز پیش`;}
+function pct(v,dec=1){return fa(Math.abs(v).toFixed(dec)).replace(".","٫");}
+function price(p){const ap=Math.abs(p);let s;if(ap>=1000)s=Math.round(p).toLocaleString("en-US");else if(ap>=1)s=p.toFixed(2);else if(ap>=0.01)s=p.toFixed(4);else s=p.toFixed(8).replace(/0+$/,"").replace(/\.$/,"");return fa(s).replace(".","٫").replace(/,/g,"٬");}
+const RWANAME={USOON:["نفت دیجیتال","Oil"],XAUT:["تترگلد","Gold"],SLVON:["نقره دیجیتال","Silver"],COPXON:["مس دیجیتال","Copper"],PPLTON:["پلاتین دیجیتال","Platinum"],UNGON:["گاز طبیعی دیجیتال","Natural Gas"]};
+function cleanEn(en){en=String(en||"").replace(/\s*\(.*?\)\s*/g," ").trim();if(/^[A-Z0-9 .]+$/.test(en)&&en.replace(/[^A-Za-z]/g,"").length>3)en=en.toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());return en;}
+function pricePosts(){
+  let mk;try{mk=JSON.parse(fs.readFileSync(path.join(ROOT,"markets.json"),"utf8"));}catch{console.log("[price] markets.json not found");return[];}
+  const M=(mk.result&&mk.result.markets)||[];const by={};for(const m of M)by[m.symbol]=m;
+  const num=x=>{if(x===null||x===undefined||x==="")return null;const n=Number(x);return Number.isFinite(n)?n:null;};
+  const nm=m=>{const tk=m.base_asset;if(RWANAME[tk])return `${RWANAME[tk][0]} (${RWANAME[tk][1]})`;return `${m.fa_base_asset||tk} (${cleanEn(m.en_base_asset||tk)})`;};
+  const mrk=d=>d>=0?"🟢":"🔴",sw=d=>d>=0?"مثبت":"منفی";
+  const majors=["BTC","ETH","SOL","XRP","BNB","DOGE","TON","ADA","TRX","AVAX"];
+  const A=["🪙 رصد قیمت بازار","","قیمت لحظه‌ای و تغییر ۲۴ ساعتهٔ بزرگان بازار در والکس:",""];
+  for(const b of majors){const m=by[b+"USDT"];if(!m)continue;const p=num(m.price),c=num(m.change_24h);if(p===null)continue;A.push(`${mrk(c||0)} ${nm(m)}: ${price(p)} دلار، ${sw(c||0)} ${pct(Math.abs(c||0))} درصد`);}
+  A.push("","📌 قیمت‌ها از بازار دلاری والکس، تغییر نسبت به ۲۴ ساعت گذشته.");
+  const arr=M.filter(m=>m.quote_asset==="USDT"&&(num(m.quote_volume_24h)||0)>50000&&num(m.price)!==null&&num(m.change_24h)!==null&&Math.abs(num(m.change_24h))<=35);
+  const gain=[...arr].sort((a,b)=>num(b.change_24h)-num(a.change_24h)).slice(0,5);
+  const lose=[...arr].sort((a,b)=>num(a.change_24h)-num(b.change_24h)).slice(0,5);
+  const B=["📊 بزرگ‌ترین تغییرات ۲۴ ساعته","","بر مبنای بازارهای دلاری پرگردش والکس.","","📈 بیشترین رشد"];
+  for(const m of gain)B.push(`🟢 ${nm(m)}: ${price(num(m.price))} دلار، مثبت ${pct(num(m.change_24h))} درصد`);
+  B.push("","📉 بیشترین افت");
+  for(const m of lose)B.push(`🔴 ${nm(m)}: ${price(num(m.price))} دلار، منفی ${pct(Math.abs(num(m.change_24h)))} درصد`);
+  B.push("","📌 همهٔ این بازارها در والکس، اسپات و تعهدی، قابل معامله‌اند.");
+  return[A.join("\n"),B.join("\n")];
+}
 
 function get(url, redirects=0){
   return new Promise((resolve,reject)=>{
     const u=new URL(url);
     const req=https.request(u,{method:"GET",headers:{"User-Agent":"Mozilla/5.0 (compatible; WallexDeskBot/1.0)","Accept":"*/*"},timeout:25000},res=>{
       if([301,302,303,307,308].includes(res.statusCode)&&res.headers.location&&redirects<4){res.resume();return resolve(get(new URL(res.headers.location,url).href,redirects+1));}
-      let d="";res.on("data",c=>d+=c);res.on("end",()=>resolve({status:res.statusCode,body:d}));
+      const ch=[];res.on("data",c=>ch.push(c));res.on("end",()=>resolve({status:res.statusCode,body:Buffer.concat(ch).toString("utf8")}));
     });
     req.on("error",reject);req.on("timeout",()=>req.destroy(new Error("timeout")));req.end();
   });
@@ -46,7 +70,7 @@ function parseRSS(xml,src){
   for(const b of blocks){
     let link=strip(tag(b,"link"));if(!link){const m=b.match(/<link[^>]*href="([^"]+)"/i);if(m)link=m[1];}
     const title=strip(tag(b,"title"));
-    const dateStr=strip(tag(b,"pubDate"))||strip(tag(b,"published"))||strip(tag(b,"updated"));
+    const dateStr=strip(tag(b,"pubDate"))||strip(tag(b,"published"))||strip(tag(b,"updated"))||strip(tag(b,"dc:date"))||strip(tag(b,"date"));
     const summary=strip(tag(b,"description")||tag(b,"summary")||tag(b,"content")).slice(0,600);
     const parsed=dateStr?Date.parse(dateStr):NaN;
     if(title&&link)items.push({src:src.id,srcName:src.name,id:link,title,link,summary,ts:isNaN(parsed)?Date.now():parsed,tsKnown:!isNaN(parsed)});
@@ -77,7 +101,7 @@ function llmPost(url,body,key){
   return new Promise((resolve,reject)=>{
     const u=new URL(url);
     const req=https.request(u,{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${key}`,"Content-Length":Buffer.byteLength(body)},timeout:120000},
-      res=>{let d="";res.on("data",c=>d+=c);res.on("end",()=>resolve({status:res.statusCode,data:d}));});
+      res=>{const ch=[];res.on("data",c=>ch.push(c));res.on("end",()=>resolve({status:res.statusCode,data:Buffer.concat(ch).toString("utf8")}));});
     req.on("error",reject);req.on("timeout",()=>req.destroy(new Error("llm timeout")));req.write(body);req.end();
   });
 }
@@ -115,6 +139,7 @@ const WRITE_SYS = `تو دسک بازار والکس هستی، صرافی ار�
 ساختار پست: یک تیتر با یک ایموجی در ابتدا، بعد خبر، بعد چرا مهم است و چه ربطی به بازار و کاربر ایرانی دارد. حداقل ۲۵۰ کلمه بنویس، ولی کل پست باید در یک پیام تلگرام جا شود، پس زیر ۴۰۹۶ کاراکتر و ترجیحا زیر ۳۵۰۰ کاراکتر بماند (حدود ۲۵۰ تا ۵۵۰ کلمه). تکه‌تکه ننویس.
 برای رسیدن به طول فقط با زمینه و توضیح عمومی و درست بنویس. هیچ عدد، قیمت، نقل‌قول یا ادعای خاصی که در خبر داده‌نشده نساز. اگر اطلاعات خبر کم است، کوتاه‌تر بنویس ولی چیزی از خودت اضافه نکن.
 هرجا اسم ارز آوردی معادل انگلیسی داخل پرانتز بیاور، مثل بیت‌کوین (Bitcoin).
+برای خوانایی بهتر، از ایموجی‌های مرتبط و به‌جا داخل متن هم استفاده کن (به‌اندازه، نه زیاد)، مثلا کنار تیتر و نکته‌های کلیدی.
 خط قرمز: قیمت تتر ننویس. سیگنال خرید و فروش و هدف قیمتی و وعده سود ممنوع. نام صرافی رقیب ایرانی نبر. فقط گزارش و تحلیل، نه توصیه معاملاتی.
 نگارش: خط تیره بلند ممنوع، ویرگول. بدون تنوین، دقیقا نه دقیقاً. بدون هٔ، نکته نه نکتهٔ. اعداد فارسی. لینک داخل متن نگذار، من خودم منبع را ته پست اضافه می‌کنم.
 فقط و فقط متن نهایی پست فارسی را برگردان، بدون توضیح اضافه و بدون JSON.`;
@@ -136,7 +161,7 @@ function tgSend(text){
   const body=JSON.stringify({chat_id:chat,text,disable_web_page_preview:false});
   return new Promise((resolve,reject)=>{
     const req=https.request(`https://api.telegram.org/bot${tok}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json","Content-Length":Buffer.byteLength(body)}},
-      r=>{let d="";r.on("data",c=>d+=c);r.on("end",()=>{let j={};try{j=JSON.parse(d);}catch{} j.ok?resolve():reject(new Error(d));});});
+      r=>{const ch=[];r.on("data",c=>ch.push(c));r.on("end",()=>{const d=Buffer.concat(ch).toString("utf8");let j={};try{j=JSON.parse(d);}catch{} j.ok?resolve():reject(new Error(d));});});
     req.on("error",reject);req.write(body);req.end();
   });
 }
@@ -152,6 +177,10 @@ async function tgSendLong(full){
 
 (async()=>{
   const seen=loadSeen();const ignoreSeen=process.env.IGNORE_SEEN==="1";
+  // ---- price-watch posts (every run), template-based from Wallex markets.json ----
+  const pp=pricePosts(); console.log(`price posts: ${pp.length}`);
+  for(const p of pp){ console.log("\n----- PRICE POST -----\n"+p.slice(0,300)); if(!DRY){ try{await tgSend(p);await sleep(1500);console.log("[price sent]");}catch(e){console.log("[price send failed]",e.message);} } }
+
   let all=[];for(const s of SOURCES)all=all.concat(await fetchSource(s));
   console.log(`fetched ${all.length} items total`);
   const cutoff=Date.now()-(+(process.env.MAX_AGE_H||48))*3600e3;
@@ -172,7 +201,7 @@ async function tgSendLong(full){
     let text;try{text=await writePost(c);}catch(e){console.log("[error] write:",e.message);continue;}
     if(!text){continue;}
     let footer=`\n\n🔗 منبع (${c.srcName}): ${c.link}`;
-    footer+= c.tsKnown ? `\n🕒 انتشار در منبع: ${tehranStamp(c.ts)} به وقت تهران، حدود ${ago(c.ts)}` : `\n🕒 زمان انتشار در منبع نامشخص`;
+    if(c.tsKnown) footer+= `\n🕒 انتشار در منبع: ${tehranStamp(c.ts)} به وقت تهران، حدود ${ago(c.ts)}`;
     let bodyText=text; const budget=4096-footer.length-1;
     if(bodyText.length>budget){ const cut=bodyText.slice(0,budget); const b=Math.max(cut.lastIndexOf("\n"),cut.lastIndexOf(". "),cut.lastIndexOf("، "),cut.lastIndexOf(" ")); bodyText=cut.slice(0, b>200?b:budget).trim()+"…"; }
     const full=bodyText+footer;
