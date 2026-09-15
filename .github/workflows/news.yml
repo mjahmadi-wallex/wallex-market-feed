@@ -25,6 +25,7 @@ jobs:
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CMC_API_KEY: ${{ secrets.CMC_API_KEY }}
           MAX_POSTS: '15'
           IGNORE_SEEN: ${{ github.event.inputs.ignore_seen == 'true' && '1' || '0' }}
         run: node telegram/newsmonitor.js
