@@ -31,6 +31,45 @@ function ago(ms){const m=Math.max(0,Math.round((Date.now()-ms)/60000));if(m<60)r
 function pct(v,dec=1){return fa(Math.abs(v).toFixed(dec)).replace(".","٫");}
 function price(p){const ap=Math.abs(p);let s;if(ap>=1000)s=Math.round(p).toLocaleString("en-US");else if(ap>=1)s=p.toFixed(2);else if(ap>=0.01)s=p.toFixed(4);else s=p.toFixed(8).replace(/0+$/,"").replace(/\.$/,"");return fa(s).replace(".","٫").replace(/,/g,"٬");}
 function capFmt(n){if(n>=1e12)return `${fa((n/1e12).toFixed(2)).replace(".","٫")} تریلیون دلار`;if(n>=1e9)return `${fa((n/1e9).toFixed(0))} میلیارد دلار`;return `${fa(Math.round(n).toLocaleString("en-US")).replace(/,/g,"٬")} دلار`;}
+function usdFmt(n){n=Number(n)||0;if(n>=1e9)return `${fa((n/1e9).toFixed(1)).replace(".","٫")} میلیارد دلار`;if(n>=1e6)return `${fa((n/1e6).toFixed(1)).replace(".","٫")} میلیون دلار`;if(n>=1e3)return `${fa((n/1e3).toFixed(0))} هزار دلار`;return `${fa(Math.round(n))} دلار`;}
+async function whalePost(){
+  const key=process.env.WHALE_ALERT_API_KEY;if(!key){console.log("[whale] no key, skip");return null;}
+  try{
+    const start=Math.floor(Date.now()/1000)-3600;
+    const r=await get(`https://api.whale-alert.io/v1/transactions?api_key=${key}&min_value=500000&start=${start}&limit=40`);
+    if(r.status!==200){console.log("[whale] HTTP",r.status,r.body.slice(0,150));return null;}
+    const j=JSON.parse(r.body);const tx=(j.transactions||[]).filter(t=>t.amount_usd).sort((a,b)=>b.amount_usd-a.amount_usd).slice(0,8);
+    if(!tx.length){console.log("[whale] no large tx in window");return null;}
+    const own=o=>{if(!o)return "کیف‌پول ناشناس";if(o.owner&&o.owner_type==="exchange")return `صرافی ${o.owner}`;if(o.owner&&o.owner!=="unknown")return o.owner;return "کیف‌پول ناشناس";};
+    const L=["🐋 رصد نهنگ‌ها","","بزرگ‌ترین جابه‌جایی‌های آن‌چین در یک ساعت گذشته:",""];
+    for(const t of tx)L.push(`🔸 ${fa(Math.round(t.amount).toLocaleString("en-US")).replace(/,/g,"٬")} ${String(t.symbol).toUpperCase()} (${usdFmt(t.amount_usd)}) از ${own(t.from)} به ${own(t.to)}`);
+    L.push("","📌 رصد جابه‌جایی‌های بزرگ برای آگاهی، نه توصیه. منبع: Whale Alert.");
+    return L.join("\n");
+  }catch(e){console.log("[whale] failed:",e.message);return null;}
+}
+async function defiLlamaHacks(seen,ignoreSeen){
+  try{
+    const r=await get("https://api.llama.fi/hacks");if(r.status!==200){console.log("[hacks] HTTP",r.status);return[];}
+    const arr=JSON.parse(r.body);const cut=Date.now()/1000-5*86400;
+    const idOf=h=>String(h.defillamaId||`${h.name}_${h.date}`);
+    seen["defillama_hacks"]||=[];
+    const recent=arr.filter(h=>h.date>=cut&&Number(h.amount)>0).sort((a,b)=>b.date-a.date);
+    const fresh=(ignoreSeen?recent:recent.filter(h=>!seen["defillama_hacks"].includes(idOf(h)))).slice(0,3);
+    const CHAINFA={Ethereum:"اتریوم",Tron:"ترون",Solana:"سولانا",BSC:"بایننس‌چین",Polygon:"پالیگان",Arbitrum:"اربیتروم",Bitcoin:"بیت‌کوین",Avalanche:"آوالانچ",Base:"بیس",Optimism:"اپتیمیزم",Fantom:"فانتوم"};
+    const chFa=c=>Array.isArray(c)?c.map(x=>CHAINFA[x]||x).join("، "):(CHAINFA[c]||c);
+    const posts=fresh.map(h=>{
+      const lines=[`🚨 رادار امنیت، هک تازه در DeFi`,"",
+        `پروتکل ${h.name}${h.chain?` روی شبکهٔ ${chFa(h.chain)}`:""} هدف حمله قرار گرفت.`,
+        `💰 مبلغ آسیب: حدود ${usdFmt(h.amount)}.`];
+      if(h.technique||h.classification)lines.push(`🔓 نوع حمله: ${h.technique||h.classification}.`);
+      lines.push("","📌 رصد رخدادهای امنیتی برای آگاهی، نه توصیه. منبع: DefiLlama.");
+      return lines.join("\n");
+    });
+    for(const h of recent){const id=idOf(h);if(!seen["defillama_hacks"].includes(id))seen["defillama_hacks"].unshift(id);}
+    seen["defillama_hacks"]=seen["defillama_hacks"].slice(0,200);
+    return posts;
+  }catch(e){console.log("[hacks] failed:",e.message);return[];}
+}
 async function globalPost(){
   try{
     const g=JSON.parse((await get("https://api.coingecko.com/api/v3/global")).body).data;
@@ -170,8 +209,8 @@ function llmUrls(){
   if(base){if(/\/chat\/completions$/.test(base))urls.push(base);else if(/\/v\d+$/.test(base))urls.push(base+"/chat/completions");else urls.push(base+"/chat/completions",base+"/v1/chat/completions");}
   return [...new Set(urls)];
 }
-async function llmChat(messages,maxTokens){
-  const key=process.env.LLM_API_KEY,model=process.env.LLM_MODEL;
+async function llmChat(messages,maxTokens,modelOverride){
+  const key=process.env.LLM_API_KEY,model=modelOverride||process.env.LLM_MODEL;
   const urls=llmUrls();if(!urls.length)throw new Error("LLM_BASE_URL empty");
   const mk=noThink=>JSON.stringify(noThink?{model,temperature:0.5,max_tokens:maxTokens,messages,reasoning:{enabled:false}}:{model,temperature:0.5,max_tokens:maxTokens,messages});
   let last="";
@@ -199,6 +238,7 @@ const WRITE_SYS = `تو دسک بازار والکس هستی، صرافی ار�
 ساختار پست: یک تیتر با یک ایموجی در ابتدا، بعد خبر، بعد چرا مهم است و چه ربطی به بازار و کاربر ایرانی دارد. حداقل ۲۵۰ کلمه بنویس، ولی کل پست باید در یک پیام تلگرام جا شود، پس زیر ۴۰۹۶ کاراکتر و ترجیحا زیر ۳۵۰۰ کاراکتر بماند (حدود ۲۵۰ تا ۵۵۰ کلمه). تکه‌تکه ننویس.
 برای رسیدن به طول فقط با زمینه و توضیح عمومی و درست بنویس. هیچ عدد، قیمت، نقل‌قول یا ادعای خاصی که در خبر داده‌نشده نساز. اگر اطلاعات خبر کم است، کوتاه‌تر بنویس ولی چیزی از خودت اضافه نکن.
 هرجا اسم ارز آوردی معادل انگلیسی داخل پرانتز بیاور، مثل بیت‌کوین (Bitcoin).
+در آوانگاریِ نام‌ها دقت کن و درست و رایج بنویس. مثلا CoinEx می‌شود کوینکس (نه کواین‌اکس)، MarsCoin می‌شود مارسکوین (نه مارکوین)، Binance می‌شود بایننس، Ethereum می‌شود اتریوم. اگر آوانگاری رایج فارسی یک نام را مطمئن نیستی، فقط نام انگلیسی را بیاور.
 برای خوانایی بهتر، از ایموجی‌های مرتبط و به‌جا داخل متن هم استفاده کن (به‌اندازه، نه زیاد)، مثلا کنار تیتر و نکته‌های کلیدی.
 خط قرمز: قیمت تتر ننویس. سیگنال خرید و فروش و هدف قیمتی و وعده سود ممنوع. نام صرافی رقیب ایرانی نبر. فقط گزارش و تحلیل، نه توصیه معاملاتی.
 نگارش: خط تیره بلند ممنوع، ویرگول. بدون تنوین، دقیقا نه دقیقاً. بدون هٔ، نکته نه نکتهٔ. اعداد فارسی. لینک داخل متن نگذار، من خودم منبع را ته پست اضافه می‌کنم.
@@ -212,7 +252,7 @@ async function selectHot(cands){
 }
 async function writePost(c){
   const u=`منبع: ${c.srcName}\nتیتر: ${c.title}\nخلاصه: ${c.summary||"-"}`;
-  let t=await llmChat([{role:"system",content:WRITE_SYS},{role:"user",content:u}],8000);
+  let t=await llmChat([{role:"system",content:WRITE_SYS},{role:"user",content:u}],8000,process.env.WRITER_MODEL);
   return t.trim();
 }
 
@@ -244,6 +284,10 @@ async function tgSendLong(full){
   if(gp){ console.log("\n----- GLOBAL POST -----\n"+gp.slice(0,400)); if(!DRY){ try{await tgSend(gp);await sleep(1500);console.log("[global sent]");}catch(e){console.log("[global send failed]",e.message);} } }
   const fg=await fearGreedPost();
   if(fg){ console.log("\n----- FEAR&GREED -----\n"+fg); if(!DRY){ try{await tgSend(fg);await sleep(1500);console.log("[cmc sent]");}catch(e){console.log("[cmc send failed]",e.message);} } }
+  const wp=await whalePost();
+  if(wp){ console.log("\n----- WHALE POST -----\n"+wp.slice(0,300)); if(!DRY){ try{await tgSend(wp);await sleep(1500);console.log("[whale sent]");}catch(e){console.log("[whale send failed]",e.message);} } }
+  const hacks=await defiLlamaHacks(seen,ignoreSeen); console.log(`hack posts: ${hacks.length}`);
+  for(const p of hacks){ console.log("\n----- HACK POST -----\n"+p); if(!DRY){ try{await tgSend(p);await sleep(1500);console.log("[hack sent]");}catch(e){console.log("[hack send failed]",e.message);} } }
 
   let all=[];for(const s of SOURCES)all=all.concat(await fetchSource(s));
   console.log(`fetched ${all.length} items total`);
