@@ -112,6 +112,34 @@ async function fearGreedPost(){
       "","📌 منبع: CoinMarketCap."].join("\n");
   }catch(e){console.log("[cmc] failed:",e.message);return null;}
 }
+const STABLENAME={USDT:"تتر",DAI:"دای"};
+async function stablecoinPost(){
+  try{
+    const r=await get("https://stablecoins.llama.fi/stablecoins?includePrices=false");
+    if(r.status!==200){console.log("[stable] HTTP",r.status);return null;}
+    const arr=(JSON.parse(r.body).peggedAssets)||[];
+    if(!arr.length){console.log("[stable] empty");return null;}
+    const val=o=>{if(!o)return 0;const v=(o.peggedUSD!=null?o.peggedUSD:Object.values(o)[0]);return Number(v)||0;};
+    let now=0,d1=0,d7=0;
+    for(const a of arr){now+=val(a.circulating);d1+=val(a.circulatingPrevDay);d7+=val(a.circulatingPrevWeek);}
+    if(!(now>0)){console.log("[stable] zero total");return null;}
+    const flow24=now-d1, flow7=now-d7;
+    const mrk=n=>n>=0?"🟢":"🔴", sgn=n=>n>=0?"مثبت":"منفی";
+    const flowFmt=n=>{const a=Math.abs(n);let s;if(a>=1e9)s=`${fa((a/1e9).toFixed(2)).replace(".","٫")} میلیارد دلار`;else if(a>=1e6)s=`${fa((a/1e6).toFixed(0))} میلیون دلار`;else s=`${fa(Math.round(a/1e3))} هزار دلار`;return `${sgn(n)} ${s}`;};
+    const nm=sym=>{const P=STABLENAME[String(sym).toUpperCase()];return P?`${P} (${sym})`:sym;};
+    const rows=arr.map(a=>({sym:String(a.symbol||""),now:val(a.circulating),d1:val(a.circulatingPrevDay)})).filter(x=>x.now>0).sort((x,y)=>y.now-x.now).slice(0,5);
+    const L=["💵 جریان استیبل‌کوین‌ها","",
+      `کل عرضهٔ استیبل‌کوین‌ها الان حدود ${capFmt(now)} است.`,
+      `${mrk(flow24)} تغییر ۲۴ ساعته: ${flowFmt(flow24)}`,
+      `${mrk(flow7)} تغییر ۷ روزه: ${flowFmt(flow7)}`,
+      "","🏦 بزرگ‌ترین استیبل‌کوین‌ها و تغییر ۲۴ ساعته"];
+    for(const x of rows){const f=x.now-x.d1;L.push(`${mrk(f)} ${nm(x.sym)}: ${capFmt(x.now)}، ${flowFmt(f)}`);}
+    L.push("",
+      "رشد عرضهٔ استیبل‌کوین‌ها یعنی ورود پول تازه و نقدینگی آمادهٔ خرید در بازار، و افت آن یعنی خروج نقدینگی. این فقط نمای کلان جریان پول است، نه سیگنال خرید و فروش.",
+      "","📌 منبع: DefiLlama.");
+    return L.join("\n");
+  }catch(e){console.log("[stable] failed:",e.message);return null;}
+}
 const RWANAME={USOON:["نفت دیجیتال","Oil"],XAUT:["تترگلد","Gold"],SLVON:["نقره دیجیتال","Silver"],COPXON:["مس دیجیتال","Copper"],PPLTON:["پلاتین دیجیتال","Platinum"],UNGON:["گاز طبیعی دیجیتال","Natural Gas"]};
 function cleanEn(en){en=String(en||"").replace(/\s*\(.*?\)\s*/g," ").trim();if(/^[A-Z0-9 .]+$/.test(en)&&en.replace(/[^A-Za-z]/g,"").length>3)en=en.toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());return en;}
 async function fetch24hAgoPrices(){
@@ -297,6 +325,8 @@ async function tgSendLong(full){
   if(gp){ console.log("\n----- GLOBAL POST -----\n"+gp.slice(0,400)); if(!DRY){ try{await tgSend(gp);await sleep(1500);console.log("[global sent]");}catch(e){console.log("[global send failed]",e.message);} } }
   const fg=await fearGreedPost();
   if(fg){ console.log("\n----- FEAR&GREED -----\n"+fg); if(!DRY){ try{await tgSend(fg);await sleep(1500);console.log("[cmc sent]");}catch(e){console.log("[cmc send failed]",e.message);} } }
+  const sc=await stablecoinPost();
+  if(sc){ console.log("\n----- STABLECOIN POST -----\n"+sc.slice(0,400)); if(!DRY){ try{await tgSend(sc);await sleep(1500);console.log("[stable sent]");}catch(e){console.log("[stable send failed]",e.message);} } }
   const wp=await whalePost();
   if(wp){ console.log("\n----- WHALE POST -----\n"+wp.slice(0,300)); if(!DRY){ try{await tgSend(wp);await sleep(1500);console.log("[whale sent]");}catch(e){console.log("[whale send failed]",e.message);} } }
   const hacks=await defiLlamaHacks(seen,ignoreSeen); console.log(`hack posts: ${hacks.length}`);
