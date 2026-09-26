@@ -16,7 +16,12 @@ const SOURCES = [
   { id: "cointelegraph",   name: "Cointelegraph",    type: "rss", url: "https://cointelegraph.com/rss" },
   { id: "coindesk",        name: "CoinDesk",         type: "rss", url: "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml" },
   { id: "cryptonews",      name: "CryptoNews",       type: "rss", url: "https://cryptonews.com/feed/" },
+  { id: "cryptonews_io",   name: "crypto.news",      type: "rss", url: "https://crypto.news/feed/" },
   { id: "bitcoinmagazine", name: "Bitcoin Magazine", type: "rss", url: "https://bitcoinmagazine.com/feed" },
+  { id: "bitcoincom",      name: "Bitcoin.com News", type: "rss", url: "https://news.bitcoin.com/feed/" },
+  { id: "decrypt",         name: "Decrypt",          type: "rss", url: "https://decrypt.co/feed" },
+  { id: "beincrypto",      name: "BeInCrypto",       type: "rss", url: "https://beincrypto.com/feed/" },
+  { id: "cryptopotato",    name: "CryptoPotato",     type: "rss", url: "https://cryptopotato.com/feed/" },
   { id: "binance",         name: "Binance",          type: "binance" },
   { id: "kucoin",          name: "KuCoin",           type: "kucoin" },
 ];
