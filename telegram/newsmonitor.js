@@ -297,7 +297,14 @@ async function selectHot(cands){
 }
 async function writePost(c){
   const u=`منبع: ${c.srcName}\nتیتر: ${c.title}\nخلاصه: ${c.summary||"-"}`;
-  let t=await llmChat([{role:"system",content:WRITE_SYS},{role:"user",content:u}],8000,process.env.WRITER_MODEL);
+  const msgs=[{role:"system",content:WRITE_SYS},{role:"user",content:u}];
+  const writer=process.env.WRITER_MODEL, fb=process.env.LLM_MODEL;
+  let t;
+  try{ t=await llmChat(msgs,8000,writer); }
+  catch(e){
+    if(writer&&fb&&writer!==fb){ console.log(`[write] writer model failed (${e.message}); falling back to LLM_MODEL`); t=await llmChat(msgs,8000,fb); }
+    else throw e;
+  }
   return stripMd(t);
 }
 
@@ -364,6 +371,10 @@ async function tgSendLong(full){
     if(!DRY){ try{await tgSend(full);sent++;console.log("[sent]");await sleep(1500);}catch(e){console.log("[send failed]",e.message);} }
   }
   console.log(`\nposted ${sent} of ${chosen.length} chosen`);
+  if(chosen.length>0 && sent===0){
+    console.log("[alert] news writing produced 0 posts this run (LLM/key likely broken)");
+    if(!DRY){ try{ await tgSend("⚠️ هشدار سیستم دسک والکس\n\nاین اجرا با وجود وجود خبر، هیچ خبری با هوش مصنوعی نوشته و ارسال نشد. احتمالاً کلید یا نام مدل LLM مشکل دارد. لطفاً بررسی شود."); }catch(e){ console.log("[alert send failed]",e.message); } }
+  }
 
   for(const it of all){(seen[it.src]||=[]);if(!seen[it.src].includes(String(it.id)))seen[it.src].unshift(String(it.id));seen[it.src]=seen[it.src].slice(0,200);}
   if(!DRY&&!ignoreSeen)saveSeen(seen);
