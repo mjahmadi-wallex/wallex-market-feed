@@ -1,0 +1,44 @@
+name: Wallex Daily Report
+on:
+  schedule:
+    - cron: '30 7 * * *'   # 07:30 UTC = 11:00 Tehran (Iran is fixed UTC+3:30, no DST)
+  workflow_dispatch:
+    inputs:
+      ignore_seen:
+        description: 'Test mode: ignore the once-per-day guard and do not save state'
+        type: boolean
+        default: false
+permissions:
+  contents: write
+concurrency:
+  group: wallex-daily
+  cancel-in-progress: false
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Send daily Wallex report (price watch + profit/loss + market analysis)
+        env:
+          RUN_MODE: daily
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CMC_API_KEY: ${{ secrets.CMC_API_KEY }}
+          WRITER_MODEL: ${{ secrets.WRITER_MODEL }}
+          IGNORE_SEEN: ${{ github.event.inputs.ignore_seen == 'true' && '1' || '0' }}
+        run: node telegram/newsmonitor.js
+      - name: Commit daily-state
+        run: |
+          set -e
+          git config user.name "wallex-desk-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add telegram/state/daily.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+          else
+            git commit -m "daily: update daily-state [skip ci]"
+            git push
+          fi
