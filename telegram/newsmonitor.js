@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 /* Wallex Desk — news monitor (two-stage: select hot -> write long post). Node, zero deps.
- * Env: LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
- *      MAX_POSTS(=15) MAX_CANDIDATES(=40) PER_SOURCE(=10) MAX_AGE_H(=48) IGNORE_SEEN DRY */
+ * Env: LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, WRITER_MODEL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+ *      RUN_MODE(routine|daily) MAX_POSTS(=15) MAX_CANDIDATES(=40) PER_SOURCE(=10) MAX_AGE_H(=48)
+ *      PUMP_WINDOW_H(=4) PUMP_THRESHOLD(=12) CMC_API_KEY IGNORE_SEEN DRY
+ * routine (every 4h): global + fear&greed + stablecoin + pump/dump + hacks + curated news.
+ * daily (11:00 Tehran, once/day via state/daily.json): Wallex price watch + profit/loss + market analysis. */
 const fs = require("fs"), path = require("path"), https = require("https");
 const { URL } = require("url");
 
@@ -145,25 +148,49 @@ async function stablecoinPost(){
 }
 const RWANAME={USOON:["نفت دیجیتال","Oil"],XAUT:["تترگلد","Gold"],SLVON:["نقره دیجیتال","Silver"],COPXON:["مس دیجیتال","Copper"],PPLTON:["پلاتین دیجیتال","Platinum"],UNGON:["گاز طبیعی دیجیتال","Natural Gas"]};
 function cleanEn(en){en=String(en||"").replace(/\s*\(.*?\)\s*/g," ").trim();if(/^[A-Z0-9 .]+$/.test(en)&&en.replace(/[^A-Za-z]/g,"").length>3)en=en.toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());return en;}
-async function fetch24hAgoPrices(){
+async function fetchAgoPrices(hoursAgo){
   try{
     const repo=process.env.GITHUB_REPOSITORY||"mjahmadi-wallex/wallex-market-feed";
-    const until=new Date(Date.now()-24*3600e3).toISOString();
+    const until=new Date(Date.now()-hoursAgo*3600e3).toISOString();
     const r1=await get(`https://api.github.com/repos/${repo}/commits?path=markets.json&until=${until}&per_page=1`);
     if(r1.status!==200)throw new Error("commits API "+r1.status);
-    const commits=JSON.parse(r1.body);if(!commits.length)throw new Error("no commit 24h ago");
+    const commits=JSON.parse(r1.body);if(!commits.length)throw new Error(`no commit ${hoursAgo}h ago`);
     const sha=commits[0].sha, when=commits[0].commit.committer.date;
     const r2=await get(`https://raw.githubusercontent.com/${repo}/${sha}/markets.json`);
     const j=JSON.parse(r2.body);const p={};for(const m of (j.result&&j.result.markets)||[])p[m.symbol]=m.price;
-    console.log(`[price] 24h-ago snapshot ${when} (${Object.keys(p).length} prices)`);
+    console.log(`[price] ${hoursAgo}h-ago snapshot ${when} (${Object.keys(p).length} prices)`);
     return p;
-  }catch(e){console.log("[price] 24h-ago fetch failed, fallback to change_24h:",e.message);return null;}
+  }catch(e){console.log(`[price] ${hoursAgo}h-ago fetch failed:`,e.message);return null;}
+}
+// Per-coin USD move using the LIQUID Wallex TMN markets, normalized by USDT/TMN (removes rial drift).
+// prev = snapshot price map (symbol->price) for the window start. Returns [{base,fa,en,usdNow,move,volUsd}].
+function wallexUsdMovers(M, prev, minUsdVol, noFallback){
+  const num=x=>{if(x===null||x===undefined||x==="")return null;const n=Number(x);return Number.isFinite(n)?n:null;};
+  const bySym={};for(const m of M)bySym[m.symbol]=m;
+  const usdtNow=num((bySym["USDTTMN"]||{}).price);
+  const usdtPrev=prev?num(prev["USDTTMN"]):null;
+  if(!usdtNow)return [];
+  const out=[];
+  for(const m of M){
+    if(m.quote_asset!=="TMN"||m.base_asset==="USDT")continue;
+    const volUsd=(num(m.quote_volume_24h)||0)/usdtNow;
+    if(volUsd<minUsdVol)continue;
+    const nowTmn=num(m.price);if(nowTmn===null)continue;
+    const usdNow=nowTmn/usdtNow;
+    let move=null;
+    if(prev&&usdtPrev){const pTmn=num(prev[m.symbol]);if(pTmn!==null&&pTmn>0){const usdPrev=pTmn/usdtPrev;if(usdPrev>0)move=(usdNow-usdPrev)/usdPrev*100;}}
+    if(move===null){ if(noFallback)continue; const c=num(m.change_24h); if(c===null)continue; move=c; }
+    if(Math.abs(move)>80)continue;
+    const R=RWANAME[m.base_asset];
+    out.push({base:m.base_asset,fa:R?R[0]:m.fa_base_asset,en:R?R[1]:cleanEn(m.en_base_asset||m.base_asset),usdNow,move,volUsd});
+  }
+  return out;
 }
 async function pricePosts(){
   let mk;try{mk=JSON.parse(fs.readFileSync(path.join(ROOT,"markets.json"),"utf8"));}catch{console.log("[price] markets.json not found");return[];}
   const M=(mk.result&&mk.result.markets)||[];const by={};for(const m of M)by[m.symbol]=m;
   const num=x=>{if(x===null||x===undefined||x==="")return null;const n=Number(x);return Number.isFinite(n)?n:null;};
-  const prev=await fetch24hAgoPrices();const exact=!!prev;
+  const prev=await fetchAgoPrices(24);const exact=!!prev;
   const dOf=m=>{const now=num(m.price);if(now===null)return null;if(prev){const p=num(prev[m.symbol]);if(p!==null&&p>0)return{d:(now-p)/p*100,now};}const c=num(m.change_24h);return c===null?null:{d:c,now};};
   const nm=m=>{const tk=m.base_asset;if(RWANAME[tk])return `${RWANAME[tk][0]} (${RWANAME[tk][1]})`;return `${m.fa_base_asset||tk} (${cleanEn(m.en_base_asset||tk)})`;};
   const mrk=d=>d>=0?"🟢":"🔴",sw=d=>d>=0?"مثبت":"منفی";
@@ -175,21 +202,68 @@ async function pricePosts(){
   A.push("","🛢 کالا و RWA");
   for(const b of rwa){const m=by[b+"USDT"];if(!m)continue;const x=dOf(m);if(!x)continue;A.push(`${mrk(x.d)} ${nm(m)}: ${price(x.now)} دلار، ${sw(x.d)} ${pct(Math.abs(x.d))} درصد`);}
   A.push("","📌 قیمت‌ها از بازار دلاری والکس.");
-  const rows=[];
-  for(const m of M){
-    if(m.quote_asset!=="USDT")continue;if((num(m.quote_volume_24h)||0)<50000)continue;
-    const x=dOf(m);if(!x)continue;if(Math.abs(x.d)>60)continue;
-    const c=num(m.change_24h);
-    if(exact&&c!==null&&Math.abs(x.d)>=8&&Math.abs(x.d-c)>Math.abs(x.d)*0.5)continue; // computed delta disagrees strongly with feed -> stale 24h-ago price
-    rows.push({m,d:x.d,now:x.now});
-  }
-  const gain=[...rows].sort((a,b)=>b.d-a.d).slice(0,5), lose=[...rows].sort((a,b)=>a.d-b.d).slice(0,5);
-  const B=["📊 بزرگ‌ترین تغییرات ۲۴ ساعته","",`${winLabel}، بر مبنای بازارهای دلاری پرگردش والکس.`,"","📈 بیشترین رشد"];
-  for(const r of gain)B.push(`🟢 ${nm(r.m)}: ${price(r.now)} دلار، مثبت ${pct(r.d)} درصد`);
+  const mv=wallexUsdMovers(M, prev, +(process.env.MOVERS_MIN_VOL||10000));
+  const nmv=it=>`${it.fa||it.base} (${it.en})`;
+  const gain=[...mv].sort((a,b)=>b.move-a.move).slice(0,5), lose=[...mv].sort((a,b)=>a.move-b.move).slice(0,5);
+  const B=["📊 پرسودترین و پرضررترین کوین‌های والکس","",`${winLabel}، بر مبنای بازارهای پرگردش والکس (قیمت دلاری).`,"","📈 بیشترین رشد"];
+  for(const r of gain)B.push(`🟢 ${nmv(r)}: ${price(r.usdNow)} دلار، مثبت ${pct(r.move)} درصد`);
   B.push("","📉 بیشترین افت");
-  for(const r of lose)B.push(`🔴 ${nm(r.m)}: ${price(r.now)} دلار، منفی ${pct(Math.abs(r.d))} درصد`);
+  for(const r of lose)B.push(`🔴 ${nmv(r)}: ${price(r.usdNow)} دلار، منفی ${pct(Math.abs(r.move))} درصد`);
   B.push("","📌 همهٔ این بازارها در والکس، اسپات و تعهدی، قابل معامله‌اند.");
   return[A.join("\n"),B.join("\n")];
+}
+async function pumpDumpPost(){
+  let mk;try{mk=JSON.parse(fs.readFileSync(path.join(ROOT,"markets.json"),"utf8"));}catch{console.log("[pump] markets.json not found");return null;}
+  const M=(mk.result&&mk.result.markets)||[];
+  const winH=+(process.env.PUMP_WINDOW_H||4), thr=+(process.env.PUMP_THRESHOLD||12);
+  const prev=await fetchAgoPrices(winH);
+  if(!prev){console.log("[pump] no window snapshot, skip");return null;}
+  const mv=wallexUsdMovers(M, prev, +(process.env.PUMP_MIN_VOL||20000), true).filter(it=>Math.abs(it.move)>=thr);
+  if(!mv.length){console.log("[pump] no abnormal moves");return null;}
+  mv.sort((a,b)=>Math.abs(b.move)-Math.abs(a.move));
+  const nmv=it=>`${it.fa||it.base} (${it.en})`;
+  const L=["🚨 هشدار حرکت ناگهانی بازار","",`کوین‌هایی که در حدود ${fa(winH)} ساعت گذشته جهش یا ریزش تند داشته‌اند (قیمت دلاری در والکس):`,""];
+  for(const r of mv.slice(0,8)){const up=r.move>=0;L.push(`${up?"🟢📈":"🔴📉"} ${nmv(r)}: ${price(r.usdNow)} دلار، ${up?"جهش":"ریزش"} ${pct(Math.abs(r.move))} درصد`);}
+  L.push("","⚠️ حرکت‌های تند و ناگهانی اغلب پرریسک و زودگذرند و گاهی پامپ‌ودامپ‌اند. این فقط رصد است، نه سیگنال خرید و فروش. تصمیم با تحلیل خودت.",
+    "","📌 بر مبنای تغییر قیمت در بازار دلاری والکس.");
+  return L.join("\n");
+}
+const ANALYSIS_SYS = `تو تحلیل‌گر دسک بازار والکس هستی و یک «جمع‌بندی روزانهٔ بازار» فارسی برای کانال تلگرام تیم می‌نویسی.
+فقط بر مبنای همان داده‌هایی که در ادامه می‌دهم (نه چیز دیگر) یک تحلیل کوتاه و کاربردی بنویس: وضعیت کلی بازار، نقدینگی و احساسات، و چند نکته‌ای که ارزش رصد دارد.
+ساختار: یک تیتر با ایموجی، بعد سه تا پنج پاراگراف کوتاه. حدود ۲۰۰ تا ۳۵۰ کلمه، در یک پیام تلگرام جا شود.
+لحن: حرفه‌ای و مسلط ولی ساده و همه‌فهم، بدون هیجان و بزرگ‌نمایی.
+هرجا اسم ارز آوردی معادل انگلیسی داخل پرانتز بیاور مثل بیت‌کوین (Bitcoin). اعداد فارسی.
+خط قرمز: قیمت تتر ننویس. سیگنال خرید و فروش و هدف قیمتی و وعدهٔ سود ممنوع. نام صرافی رقیب ایرانی نبر. فقط تحلیل و رصد، نه توصیهٔ معاملاتی.
+نگارش: خط تیرهٔ بلند ممنوع، به‌جایش ویرگول. بدون تنوین. بدون هٔ. هیچ مارک‌داونی (نه ** و نه * و نه # و نه بک‌تیک) نگذار. فقط حروف فارسی و در صورت نیاز انگلیسی؛ هیچ حرف چینی یا ژاپنی یا کره‌ای یا خط دیگری نیاور.
+فقط متن نهایی پست را برگردان، بدون توضیح اضافه.`;
+async function marketAnalysisPost(){
+  try{
+    const lines=[];
+    try{ const g=JSON.parse((await get("https://api.coingecko.com/api/v3/global")).body).data;
+      lines.push(`ارزش کل بازار: ${capFmt(g.total_market_cap.usd)}، تغییر ۲۴ساعته ${g.market_cap_change_percentage_24h_usd>=0?"+":"-"}${Math.abs(g.market_cap_change_percentage_24h_usd).toFixed(1)} درصد`);
+      lines.push(`دامیننس: بیت‌کوین ${g.market_cap_percentage.btc.toFixed(1)} درصد، اتریوم ${g.market_cap_percentage.eth.toFixed(1)} درصد`);
+    }catch(e){console.log("[analysis] global failed",e.message);}
+    const cmc=process.env.CMC_API_KEY;
+    if(cmc){ try{ const r=await getH("https://pro-api.coinmarketcap.com/v3/fear-and-greed/latest",{"X-CMC_PRO_API_KEY":cmc}); if(r.status===200){const d=JSON.parse(r.body).data;lines.push(`شاخص ترس و طمع: ${d.value} از ۱۰۰ (${d.value_classification})`);} }catch(e){} }
+    try{ const r=await get("https://stablecoins.llama.fi/stablecoins?includePrices=false"); const arr=(JSON.parse(r.body).peggedAssets)||[]; const val=o=>{if(!o)return 0;const v=(o.peggedUSD!=null?o.peggedUSD:Object.values(o)[0]);return Number(v)||0;}; let now=0,d1=0;for(const a of arr){now+=val(a.circulating);d1+=val(a.circulatingPrevDay);} lines.push(`کل عرضهٔ استیبل‌کوین‌ها: ${Math.round(now/1e9)} میلیارد دلار، تغییر ۲۴ساعته ${(now-d1)>=0?"+":"-"}${Math.round(Math.abs(now-d1)/1e6)} میلیون دلار (ورود یا خروج نقدینگی)`); }catch(e){console.log("[analysis] stable failed",e.message);}
+    try{
+      const mk=JSON.parse(fs.readFileSync(path.join(ROOT,"markets.json"),"utf8"));const M=(mk.result&&mk.result.markets)||[];
+      const prev=await fetchAgoPrices(24);
+      const mv=wallexUsdMovers(M, prev, 10000).sort((a,b)=>b.move-a.move);
+      const fmtm=r=>`${r.en} ${r.move>=0?"+":"-"}${Math.abs(r.move).toFixed(1)} درصد`;
+      const gg=mv.slice(0,3).map(fmtm).join("، ");
+      const ll=mv.slice(-3).reverse().map(fmtm).join("، ");
+      if(gg)lines.push(`بیشترین رشد ۲۴ساعتهٔ والکس: ${gg}`);
+      if(ll)lines.push(`بیشترین افت ۲۴ساعتهٔ والکس: ${ll}`);
+    }catch(e){console.log("[analysis] movers failed",e.message);}
+    if(lines.length<2){console.log("[analysis] not enough data");return null;}
+    const data="داده‌های امروز بازار:\n"+lines.join("\n");
+    const writer=process.env.WRITER_MODEL, fb=process.env.LLM_MODEL;
+    let t;
+    try{ t=await llmChat([{role:"system",content:ANALYSIS_SYS},{role:"user",content:data}],4000,writer); }
+    catch(e){ if(writer&&fb&&writer!==fb){console.log(`[analysis] writer failed (${e.message}); fallback to LLM_MODEL`);t=await llmChat([{role:"system",content:ANALYSIS_SYS},{role:"user",content:data}],4000,fb);} else throw e; }
+    return stripMd(t);
+  }catch(e){console.log("[analysis] failed:",e.message);return null;}
 }
 
 function get(url, redirects=0){
@@ -272,7 +346,9 @@ async function llmChat(messages,maxTokens,modelOverride){
 }
 
 const SELECT_SYS = `تو سردبیر دسک بازار والکس هستی. از میان خبرهای زیر، داغ‌ترین و مهم‌ترین‌ها را برای مخاطب ایرانی کریپتو انتخاب و به‌ترتیب اولویت (داغ‌ترین اول) مرتب کن.
-معیار داغ‌بودن: اثر بزرگ بر بازار، تصمیم نهاد ناظر، رویداد کلان، هک یا رخداد امنیتی مهم، لیست‌شدن یا محصول مهم. خبر کم‌اهمیت یا تکراری یا صرفا تبلیغاتی را کنار بگذار.
+معیار داغ‌بودن: اثر بزرگ بر بازار، تصمیم نهاد ناظر، رویداد کلان، هک یا رخداد امنیتی مهم، لیست‌شدن یا محصول مهم.
+به این موضوع‌ها وزن و اولویت بیشتری بده: خبرهای مربوط به بیت‌کوین (BTC)، اتریوم (ETH) و سولانا (SOL)؛ خبرهای نفت و طلا و کالاها؛ و جابه‌جایی‌ها و فعالیت‌های بزرگ نهنگ‌ها و دارندگان عمده (whale). اگر چنین خبرهایی در فهرست بود، آن‌ها را بالاتر بیاور.
+خبر کم‌اهمیت یا تکراری یا صرفا تبلیغاتی را کنار بگذار.
 حداکثر ${MAX_POSTS} مورد. اگر تعداد خبرهای واقعا ارزشمند کمتر بود، کمتر انتخاب کن.
 خروجی فقط یک آرایه JSON از id‌های انتخابی به‌ترتیب اولویت، بدون هیچ متن اضافه: ["<id>","<id>"]`;
 
@@ -327,21 +403,35 @@ async function tgSendLong(full){
   for(let i=0;i<safe.length;i++){await tgSend(safe[i]);await sleep(1500);}
 }
 
+async function send(label,text){ if(!text)return false; console.log(`\n----- ${label} -----\n`+String(text).slice(0,400)); if(DRY)return true; try{await tgSend(text);await sleep(1500);console.log(`[${label} sent]`);return true;}catch(e){console.log(`[${label} send failed]`,e.message);return false;} }
+function tehranYmd(ms){const t=new Date(ms+(3*60+30)*60000);const[jy,jm,jd]=g2j(t.getUTCFullYear(),t.getUTCMonth()+1,t.getUTCDate());return `${jy}-${jm}-${jd}`;}
+
 (async()=>{
   const seen=loadSeen();const ignoreSeen=process.env.IGNORE_SEEN==="1";
-  // ---- price-watch posts (every run), template-based from Wallex markets.json ----
-  const pp=await pricePosts(); console.log(`price posts: ${pp.length}`);
-  for(const p of pp){ console.log("\n----- PRICE POST -----\n"+p.slice(0,300)); if(!DRY){ try{await tgSend(p);await sleep(1500);console.log("[price sent]");}catch(e){console.log("[price send failed]",e.message);} } }
-  const gp=await globalPost();
-  if(gp){ console.log("\n----- GLOBAL POST -----\n"+gp.slice(0,400)); if(!DRY){ try{await tgSend(gp);await sleep(1500);console.log("[global sent]");}catch(e){console.log("[global send failed]",e.message);} } }
-  const fg=await fearGreedPost();
-  if(fg){ console.log("\n----- FEAR&GREED -----\n"+fg); if(!DRY){ try{await tgSend(fg);await sleep(1500);console.log("[cmc sent]");}catch(e){console.log("[cmc send failed]",e.message);} } }
-  const sc=await stablecoinPost();
-  if(sc){ console.log("\n----- STABLECOIN POST -----\n"+sc.slice(0,400)); if(!DRY){ try{await tgSend(sc);await sleep(1500);console.log("[stable sent]");}catch(e){console.log("[stable send failed]",e.message);} } }
-  const wp=await whalePost();
-  if(wp){ console.log("\n----- WHALE POST -----\n"+wp.slice(0,300)); if(!DRY){ try{await tgSend(wp);await sleep(1500);console.log("[whale sent]");}catch(e){console.log("[whale send failed]",e.message);} } }
+  const MODE=(process.env.RUN_MODE||"routine").toLowerCase();
+  console.log(`RUN_MODE=${MODE}`);
+
+  // ---- DAILY run @ 11:00 Tehran (once/day): Wallex price watch + profit/loss + market analysis ----
+  if(MODE==="daily"){
+    const stateF=path.join(ROOT,"telegram","state","daily.json");
+    const today=tehranYmd(Date.now());
+    let st={};try{st=JSON.parse(fs.readFileSync(stateF,"utf8"));}catch{}
+    if(!ignoreSeen && st.lastDaily===today){ console.log(`[daily] already sent today (${today}), skip`); return; }
+    const pp=await pricePosts(); console.log(`daily price posts: ${pp.length}`);
+    for(const p of pp){ await send("DAILY PRICE", p); }
+    await send("MARKET ANALYSIS", await marketAnalysisPost());
+    if(!DRY && !ignoreSeen){ try{fs.mkdirSync(path.dirname(stateF),{recursive:true});fs.writeFileSync(stateF,JSON.stringify({lastDaily:today,ts:Date.now()}));}catch(e){console.log("[daily] state save failed",e.message);} }
+    console.log("daily done"+(DRY?" (dry)":""));
+    return;
+  }
+
+  // ---- ROUTINE run (every 4h): market data + pump/dump + hacks + news ----
+  await send("GLOBAL POST", await globalPost());
+  await send("FEAR&GREED", await fearGreedPost());
+  await send("STABLECOIN POST", await stablecoinPost());
+  await send("PUMP/DUMP", await pumpDumpPost());
   const hacks=await defiLlamaHacks(seen,ignoreSeen); console.log(`hack posts: ${hacks.length}`);
-  for(const p of hacks){ console.log("\n----- HACK POST -----\n"+p); if(!DRY){ try{await tgSend(p);await sleep(1500);console.log("[hack sent]");}catch(e){console.log("[hack send failed]",e.message);} } }
+  for(const p of hacks){ await send("HACK POST", p); }
 
   let all=[];for(const s of SOURCES)all=all.concat(await fetchSource(s));
   console.log(`fetched ${all.length} items total`);
