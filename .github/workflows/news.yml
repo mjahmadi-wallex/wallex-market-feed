@@ -1,46 +1,49 @@
-name: Wallex News Monitor
+name: Wallex Bot
 on:
   schedule:
-    - cron: '10 */4 * * *'   # every 4 hours, at :10
+    - cron: '30 7 * * *'    # 07:30 UTC = 11:00 Tehran (morning slot)
+    - cron: '30 13 * * *'   # 13:30 UTC = 17:00 Tehran (evening slot)
   workflow_dispatch:
     inputs:
       ignore_seen:
-        description: 'Test mode: ignore seen-state and do not save it'
+        description: 'Test mode: ignore seen/daily state and do not save it'
         type: boolean
         default: false
+      slot:
+        description: 'Force slot: morning or evening (leave empty for auto by time)'
+        type: string
+        default: ''
 permissions:
   contents: write
 concurrency:
-  group: wallex-news
+  group: wallex-bot
   cancel-in-progress: false
 jobs:
-  news:
+  bot:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Monitor sources and post interesting news
+      - name: Run Wallex bot slot
         env:
-          RUN_MODE: routine
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          WRITER_MODEL: ${{ secrets.WRITER_MODEL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CMC_API_KEY: ${{ secrets.CMC_API_KEY }}
-          WHALE_ALERT_API_KEY: ${{ secrets.WHALE_ALERT_API_KEY }}
-          WRITER_MODEL: ${{ secrets.WRITER_MODEL }}
-          MAX_POSTS: '15'
+          SLOT: ${{ github.event.inputs.slot }}
           IGNORE_SEEN: ${{ github.event.inputs.ignore_seen == 'true' && '1' || '0' }}
         run: node telegram/newsmonitor.js
-      - name: Commit seen-state
+      - name: Commit state
         run: |
           set -e
           git config user.name "wallex-desk-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add telegram/state/seen.json 2>/dev/null || true
+          git add telegram/state/seen.json telegram/state/daily.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "nothing to commit"
           else
-            git commit -m "news: update seen-state [skip ci]"
+            git commit -m "bot: update state [skip ci]"
             git push
           fi
