@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-/* Wallex Desk — news monitor (two-stage: select hot -> write long post). Node, zero deps.
+/* Wallex Desk — news + market bot. Node, zero deps. Runs TWICE daily: 11:00 and 17:00 Tehran.
+ * Each slot: up to 2 short news posts + 1 whale post + 1 pump/dump post + 1 market-analysis post.
+ * Morning slot (11:00) also sends the once-daily Wallex profit/loss report. Posts are short (<=2 paragraphs).
  * Env: LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, WRITER_MODEL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
- *      RUN_MODE(routine|daily) MAX_POSTS(=15) MAX_CANDIDATES(=40) PER_SOURCE(=10) MAX_AGE_H(=48)
- *      PUMP_WINDOW_H(=4) PUMP_THRESHOLD(=12) CMC_API_KEY IGNORE_SEEN DRY
- * routine (every 4h): global + fear&greed + stablecoin + pump/dump + hacks + curated news.
- * daily (11:00 Tehran, once/day via state/daily.json): Wallex price watch + profit/loss + market analysis. */
+ *      SLOT(morning|evening; else auto by Tehran hour) MAX_POSTS(=2) MAX_CANDIDATES(=40)
+ *      PER_SOURCE(=10) MAX_AGE_H(=48) PUMP_THRESHOLD(=12) CMC_API_KEY IGNORE_SEEN DRY */
 const fs = require("fs"), path = require("path"), https = require("https");
 const { URL } = require("url");
 
 const ROOT = path.resolve(__dirname, "..");
 const SEEN = path.join(ROOT, "telegram", "state", "seen.json");
-const MAX_POSTS = +(process.env.MAX_POSTS || 15);
+const MAX_POSTS = +(process.env.MAX_POSTS || 2);
 const MAX_CANDIDATES = +(process.env.MAX_CANDIDATES || 40);
 const PER_SOURCE = +(process.env.PER_SOURCE || 10);
 const DRY = process.env.DRY === "1";
@@ -212,25 +212,24 @@ async function pricePosts(){
   B.push("","📌 همهٔ این بازارها در والکس، اسپات و تعهدی، قابل معامله‌اند.");
   return[A.join("\n"),B.join("\n")];
 }
-async function pumpDumpPost(){
+async function pumpDumpPost(windowH){
   let mk;try{mk=JSON.parse(fs.readFileSync(path.join(ROOT,"markets.json"),"utf8"));}catch{console.log("[pump] markets.json not found");return null;}
   const M=(mk.result&&mk.result.markets)||[];
-  const winH=+(process.env.PUMP_WINDOW_H||4), thr=+(process.env.PUMP_THRESHOLD||12);
+  const winH=windowH||+(process.env.PUMP_WINDOW_H||12), thr=+(process.env.PUMP_THRESHOLD||12);
   const prev=await fetchAgoPrices(winH);
   if(!prev){console.log("[pump] no window snapshot, skip");return null;}
   const mv=wallexUsdMovers(M, prev, +(process.env.PUMP_MIN_VOL||20000), true).filter(it=>Math.abs(it.move)>=thr);
   if(!mv.length){console.log("[pump] no abnormal moves");return null;}
   mv.sort((a,b)=>Math.abs(b.move)-Math.abs(a.move));
   const nmv=it=>`${it.fa||it.base} (${it.en})`;
-  const L=["🚨 هشدار حرکت ناگهانی بازار","",`کوین‌هایی که در حدود ${fa(winH)} ساعت گذشته جهش یا ریزش تند داشته‌اند (قیمت دلاری در والکس):`,""];
-  for(const r of mv.slice(0,8)){const up=r.move>=0;L.push(`${up?"🟢📈":"🔴📉"} ${nmv(r)}: ${price(r.usdNow)} دلار، ${up?"جهش":"ریزش"} ${pct(Math.abs(r.move))} درصد`);}
-  L.push("","⚠️ حرکت‌های تند و ناگهانی اغلب پرریسک و زودگذرند و گاهی پامپ‌ودامپ‌اند. این فقط رصد است، نه سیگنال خرید و فروش. تصمیم با تحلیل خودت.",
-    "","📌 بر مبنای تغییر قیمت در بازار دلاری والکس.");
+  const L=["🚨 هشدار حرکت ناگهانی بازار","",`دو کوینی که در حدود ${fa(winH)} ساعت گذشته بیشترین جهش یا ریزش را در والکس داشته‌اند:`,""];
+  for(const r of mv.slice(0,2)){const up=r.move>=0;L.push(`${up?"🟢📈":"🔴📉"} ${nmv(r)}: ${price(r.usdNow)} دلار، ${up?"جهش":"ریزش"} ${pct(Math.abs(r.move))} درصد`);}
+  L.push("","⚠️ حرکت‌های تند اغلب پرریسک و زودگذرند و گاهی پامپ‌ودامپ‌اند. فقط رصد است، نه سیگنال خرید و فروش.");
   return L.join("\n");
 }
 const ANALYSIS_SYS = `تو تحلیل‌گر دسک بازار والکس هستی و یک «جمع‌بندی روزانهٔ بازار» فارسی برای کانال تلگرام تیم می‌نویسی.
-فقط بر مبنای همان داده‌هایی که در ادامه می‌دهم (نه چیز دیگر) یک تحلیل کوتاه و کاربردی بنویس: وضعیت کلی بازار، نقدینگی و احساسات، و چند نکته‌ای که ارزش رصد دارد.
-ساختار: یک تیتر با ایموجی، بعد سه تا پنج پاراگراف کوتاه. حدود ۲۰۰ تا ۳۵۰ کلمه، در یک پیام تلگرام جا شود.
+فقط بر مبنای همان داده‌هایی که در ادامه می‌دهم (نه چیز دیگر) یک تحلیل خیلی کوتاه و کاربردی بنویس: وضعیت کلی بازار، نقدینگی و احساسات، و مهم‌ترین نکته‌ای که ارزش رصد دارد.
+ساختار: یک تیتر با ایموجی، بعد نهایتاً دو پاراگراف کوتاه. کل پست زیر ۷۰۰ کاراکتر بماند. طولانی ننویس.
 لحن: حرفه‌ای و مسلط ولی ساده و همه‌فهم، بدون هیجان و بزرگ‌نمایی.
 هرجا اسم ارز آوردی معادل انگلیسی داخل پرانتز بیاور مثل بیت‌کوین (Bitcoin). اعداد فارسی.
 خط قرمز: قیمت تتر ننویس. سیگنال خرید و فروش و هدف قیمتی و وعدهٔ سود ممنوع. نام صرافی رقیب ایرانی نبر. فقط تحلیل و رصد، نه توصیهٔ معاملاتی.
@@ -352,18 +351,16 @@ const SELECT_SYS = `تو سردبیر دسک بازار والکس هستی. ا�
 حداکثر ${MAX_POSTS} مورد. اگر تعداد خبرهای واقعا ارزشمند کمتر بود، کمتر انتخاب کن.
 خروجی فقط یک آرایه JSON از id‌های انتخابی به‌ترتیب اولویت، بدون هیچ متن اضافه: ["<id>","<id>"]`;
 
-const WRITE_SYS = `تو دسک بازار والکس هستی، صرافی ارز دیجیتال ایرانی، و برای کانال تلگرام تیم یک پست خبری فارسی می‌نویسی.
-لحن: حرفه‌ای و مسلط مثل یک تریدر کارکشته که تصویر کل بازار را می‌بیند، ولی ساده و همه‌فهم. جدی و بدون هیجان و بزرگ‌نمایی.
-ساختار پست: یک تیتر با یک ایموجی در ابتدا، بعد خبر، بعد چرا مهم است و چه ربطی به بازار و کاربر ایرانی دارد. حداقل ۲۵۰ کلمه بنویس، ولی کل پست باید در یک پیام تلگرام جا شود، پس زیر ۴۰۹۶ کاراکتر و ترجیحا زیر ۳۵۰۰ کاراکتر بماند (حدود ۲۵۰ تا ۵۵۰ کلمه). تکه‌تکه ننویس.
-برای رسیدن به طول فقط با زمینه و توضیح عمومی و درست بنویس. هیچ عدد، قیمت، نقل‌قول یا ادعای خاصی که در خبر داده‌نشده نساز. اگر اطلاعات خبر کم است، کوتاه‌تر بنویس ولی چیزی از خودت اضافه نکن.
+const WRITE_SYS = `تو دسک بازار والکس هستی، صرافی ارز دیجیتال ایرانی، و برای کانال تلگرام تیم یک پست خبری کوتاه فارسی می‌نویسی.
+لحن: حرفه‌ای و مسلط ولی ساده و همه‌فهم. جدی و بدون هیجان و بزرگ‌نمایی.
+خیلی خلاصه بنویس: یک تیتر کوتاه با یک ایموجی در ابتدا، بعد نهایتاً دو پاراگراف کوتاه. پاراگراف اول خود خبر در یکی‌دو جمله، پاراگراف دوم اینکه چرا مهم است و چه ربطی به بازار و کاربر ایرانی دارد. کل پست زیر ۶۰۰ کاراکتر بماند. طولانی و چندپاراگرافی ننویس.
+هیچ عدد، قیمت، نقل‌قول یا ادعایی که در خبر داده‌نشده نساز. اگر اطلاعات کم است کوتاه‌تر بنویس و چیزی از خودت اضافه نکن.
 هرجا اسم ارز آوردی معادل انگلیسی داخل پرانتز بیاور، مثل بیت‌کوین (Bitcoin).
-در آوانگاریِ نام‌ها دقت کن و درست و رایج بنویس. مثلا CoinEx می‌شود کوینکس (نه کواین‌اکس)، MarsCoin می‌شود مارسکوین (نه مارکوین)، Binance می‌شود بایننس، Ethereum می‌شود اتریوم. اگر آوانگاری رایج فارسی یک نام را مطمئن نیستی، فقط نام انگلیسی را بیاور.
-برای خوانایی بهتر، از ایموجی‌های مرتبط و به‌جا داخل متن هم استفاده کن (به‌اندازه، نه زیاد)، مثلا کنار تیتر و نکته‌های کلیدی.
-خط قرمز: قیمت تتر ننویس. سیگنال خرید و فروش و هدف قیمتی و وعده سود ممنوع. نام صرافی رقیب ایرانی نبر. فقط گزارش و تحلیل، نه توصیه معاملاتی.
-نگارش: خط تیره بلند ممنوع، ویرگول. بدون تنوین، دقیقا نه دقیقاً. بدون هٔ، نکته نه نکتهٔ. اعداد فارسی. لینک داخل متن نگذار، من خودم منبع را ته پست اضافه می‌کنم.
-از هیچ نشانه‌گذاری مارک‌داون استفاده نکن: نه ** و نه * و نه # و نه بک‌تیک. فقط متن ساده و ایموجی. برای تیتر و تاکید، خودِ کلمه و ایموجی کافی است.
-فقط با حروف فارسی بنویس و در صورت نیاز انگلیسی (برای نام‌ها). هیچ حرف چینی یا ژاپنی یا کره‌ای یا هر خط و الفبای دیگری به‌کار نبر، حتی یک کلمه یا یک نویسه.
-فقط و فقط متن نهایی پست فارسی را برگردان، بدون توضیح اضافه و بدون JSON.`;
+در آوانگاری نام‌ها دقت کن: CoinEx می‌شود کوینکس، MarsCoin می‌شود مارسکوین، Binance بایننس، Ethereum اتریوم. اگر مطمئن نیستی فقط نام انگلیسی را بیاور.
+خط قرمز: قیمت تتر ننویس. سیگنال خرید و فروش و هدف قیمتی و وعدهٔ سود ممنوع. نام صرافی رقیب ایرانی نبر. فقط گزارش، نه توصیهٔ معاملاتی.
+نگارش: خط تیرهٔ بلند ممنوع، ویرگول. بدون تنوین، دقیقا نه دقیقاً. بدون هٔ. اعداد فارسی. لینک داخل متن نگذار، منبع را خودم ته پست می‌گذارم.
+هیچ مارک‌داونی (نه ** و نه * و نه # و نه بک‌تیک) نگذار. فقط حروف فارسی و در صورت نیاز انگلیسی؛ هیچ حرف چینی یا ژاپنی یا کره‌ای یا خط دیگری به‌کار نبر.
+فقط متن نهایی پست فارسی را برگردان، بدون توضیح اضافه و بدون JSON.`;
 
 async function selectHot(cands){
   const list=cands.map(c=>`id=${c.id} | ${c.srcName} | ${ago(c.ts)} | ${c.title}`).join("\n");
@@ -376,11 +373,30 @@ async function writePost(c){
   const msgs=[{role:"system",content:WRITE_SYS},{role:"user",content:u}];
   const writer=process.env.WRITER_MODEL, fb=process.env.LLM_MODEL;
   let t;
-  try{ t=await llmChat(msgs,8000,writer); }
+  try{ t=await llmChat(msgs,1500,writer); }
   catch(e){
-    if(writer&&fb&&writer!==fb){ console.log(`[write] writer model failed (${e.message}); falling back to LLM_MODEL`); t=await llmChat(msgs,8000,fb); }
+    if(writer&&fb&&writer!==fb){ console.log(`[write] writer model failed (${e.message}); falling back to LLM_MODEL`); t=await llmChat(msgs,1500,fb); }
     else throw e;
   }
+  return stripMd(t);
+}
+const WHALE_SYS = `تو دسک بازار والکس هستی و یک پست کوتاه فارسی دربارهٔ «فعالیت نهنگ‌ها» برای کانال تلگرام تیم می‌نویسی.
+بر مبنای همین یکی‌دو خبری که می‌دهم، خیلی خلاصه بنویس: نهنگ‌ها و دارندگان بزرگ چه کرده‌اند و چرا مهم است.
+ساختار: یک تیتر با ایموجی 🐋 در ابتدا، بعد نهایتاً دو پاراگراف کوتاه. کل پست زیر ۶۰۰ کاراکتر.
+هیچ عدد یا رقمی که در خبر نیست نساز. هرجا اسم ارز آوردی معادل انگلیسی داخل پرانتز بیاور.
+خط قرمز: قیمت تتر ننویس. سیگنال خرید و فروش و هدف قیمتی ممنوع. نام صرافی رقیب ایرانی نبر. فقط رصد و گزارش.
+نگارش: خط تیرهٔ بلند ممنوع، ویرگول. بدون تنوین و بدون هٔ. اعداد فارسی. هیچ مارک‌داونی نگذار. فقط فارسی و در صورت نیاز انگلیسی؛ هیچ حرف چینی یا ژاپنی یا کره‌ای نیاور.
+فقط متن نهایی پست را برگردان.`;
+const WHALE_RE=/\bwhales?\b|large holder|big holder|mega[- ]?whale|whale wallet|whale address|accumulat|dormant (?:wallet|address|whale)|large transfer|moved \$?\d+\s*(?:m|b|million|billion)|transferred \$?\d+\s*(?:m|b|million|billion)/i;
+async function whaleNewsPost(cands, usedIds){
+  const picks=cands.filter(c=>WHALE_RE.test(`${c.title||""} ${c.summary||""}`)).slice(0,2);
+  if(!picks.length){console.log("[whale] no whale-related news");return null;}
+  const data=picks.map((c,i)=>`خبر ${i+1} (${c.srcName}):\nتیتر: ${c.title}\nخلاصه: ${c.summary||"-"}`).join("\n\n");
+  const writer=process.env.WRITER_MODEL, fb=process.env.LLM_MODEL;
+  let t;
+  try{ t=await llmChat([{role:"system",content:WHALE_SYS},{role:"user",content:data}],1500,writer); }
+  catch(e){ if(writer&&fb&&writer!==fb){console.log(`[whale] writer failed (${e.message}); fallback`);try{t=await llmChat([{role:"system",content:WHALE_SYS},{role:"user",content:data}],1500,fb);}catch(e2){console.log("[whale] failed",e2.message);return null;}} else {console.log("[whale] failed",e.message);return null;} }
+  for(const c of picks)usedIds.add(String(c.id));
   return stripMd(t);
 }
 
@@ -408,31 +424,11 @@ function tehranYmd(ms){const t=new Date(ms+(3*60+30)*60000);const[jy,jm,jd]=g2j(
 
 (async()=>{
   const seen=loadSeen();const ignoreSeen=process.env.IGNORE_SEEN==="1";
-  const MODE=(process.env.RUN_MODE||"routine").toLowerCase();
-  console.log(`RUN_MODE=${MODE}`);
+  const thHour=new Date(Date.now()+(3*60+30)*60000).getUTCHours();
+  const morning=process.env.SLOT?process.env.SLOT.toLowerCase()==="morning":thHour<14;
+  console.log(`slot=${morning?"morning(11:00)":"evening(17:00)"} tehranHour=${thHour}`);
 
-  // ---- DAILY run @ 11:00 Tehran (once/day): Wallex price watch + profit/loss + market analysis ----
-  if(MODE==="daily"){
-    const stateF=path.join(ROOT,"telegram","state","daily.json");
-    const today=tehranYmd(Date.now());
-    let st={};try{st=JSON.parse(fs.readFileSync(stateF,"utf8"));}catch{}
-    if(!ignoreSeen && st.lastDaily===today){ console.log(`[daily] already sent today (${today}), skip`); return; }
-    const pp=await pricePosts(); console.log(`daily price posts: ${pp.length}`);
-    for(const p of pp){ await send("DAILY PRICE", p); }
-    await send("MARKET ANALYSIS", await marketAnalysisPost());
-    if(!DRY && !ignoreSeen){ try{fs.mkdirSync(path.dirname(stateF),{recursive:true});fs.writeFileSync(stateF,JSON.stringify({lastDaily:today,ts:Date.now()}));}catch(e){console.log("[daily] state save failed",e.message);} }
-    console.log("daily done"+(DRY?" (dry)":""));
-    return;
-  }
-
-  // ---- ROUTINE run (every 4h): market data + pump/dump + hacks + news ----
-  await send("GLOBAL POST", await globalPost());
-  await send("FEAR&GREED", await fearGreedPost());
-  await send("STABLECOIN POST", await stablecoinPost());
-  await send("PUMP/DUMP", await pumpDumpPost());
-  const hacks=await defiLlamaHacks(seen,ignoreSeen); console.log(`hack posts: ${hacks.length}`);
-  for(const p of hacks){ await send("HACK POST", p); }
-
+  // fetch news candidates once (shared by whale + general news)
   let all=[];for(const s of SOURCES)all=all.concat(await fetchSource(s));
   console.log(`fetched ${all.length} items total`);
   const cutoff=Date.now()-(+(process.env.MAX_AGE_H||48))*3600e3;
@@ -440,33 +436,56 @@ function tehranYmd(ms){const t=new Date(ms+(3*60+30)*60000);const[jy,jm,jd]=g2j(
   const cnt={},cands=[];
   for(const it of fresh){if((cnt[it.src]||0)>=PER_SOURCE)continue;cnt[it.src]=(cnt[it.src]||0)+1;cands.push(it);if(cands.length>=MAX_CANDIDATES)break;}
   console.log(`new(recent): ${fresh.length}, candidates: ${cands.length}`);
+  const usedIds=new Set();
 
+  // 🐋 whale: up to 2 whale-related news in one short post
+  await send("WHALE", await whaleNewsPost(cands, usedIds));
+
+  // 📰 news: up to 2 short separate posts (excluding whale picks)
+  const newsCands=cands.filter(c=>!usedIds.has(String(c.id)));
   let order=null;
-  if(cands.length){ try{order=await selectHot(cands);}catch(e){console.log("[error] select:",e.message);order=null;} }
-  if(order===null){ order=cands.slice(0,MAX_POSTS).map(c=>String(c.id)); console.log(`[select] LLM failed, fallback to recency: ${order.length}`); }
-  else { console.log(`selected ${order.length} (priority order)`); }
-  const byId=Object.fromEntries(cands.map(c=>[String(c.id),c]));
+  if(newsCands.length){ try{order=await selectHot(newsCands);}catch(e){console.log("[error] select:",e.message);order=null;} }
+  if(order===null){ order=newsCands.slice(0,MAX_POSTS).map(c=>String(c.id)); console.log(`[select] fallback to recency`); }
+  const byId=Object.fromEntries(newsCands.map(c=>[String(c.id),c]));
   const chosen=order.map(id=>byId[String(id)]).filter(Boolean).slice(0,MAX_POSTS);
-
-  let sent=0;
+  let newsSent=0;
   for(const c of chosen){
     let text;try{text=await writePost(c);}catch(e){console.log("[error] write:",e.message);continue;}
     if(!text){continue;}
     let footer=`\n\n🔗 منبع (${c.srcName}): ${c.link}`;
     if(c.tsKnown) footer+= `\n🕒 انتشار در منبع: ${tehranStamp(c.ts)} به وقت تهران، حدود ${ago(c.ts)}`;
-    let bodyText=text; const budget=4096-footer.length-1;
-    if(bodyText.length>budget){ const cut=bodyText.slice(0,budget); const b=Math.max(cut.lastIndexOf("\n"),cut.lastIndexOf(". "),cut.lastIndexOf("، "),cut.lastIndexOf(" ")); bodyText=cut.slice(0, b>200?b:budget).trim()+"…"; }
-    const full=bodyText+footer;
-    console.log(`\n----- POST (${c.srcName}, ${text.split(/\s+/).length} words, ${full.length} chars) -----\n${full.slice(0,400)}...`);
-    if(!DRY){ try{await tgSend(full);sent++;console.log("[sent]");await sleep(1500);}catch(e){console.log("[send failed]",e.message);} }
+    let body=text; const budget=4096-footer.length-1;
+    if(body.length>budget){ const cut=body.slice(0,budget); const b=Math.max(cut.lastIndexOf("\n"),cut.lastIndexOf(". "),cut.lastIndexOf("، "),cut.lastIndexOf(" ")); body=cut.slice(0, b>200?b:budget).trim()+"…"; }
+    if(await send("NEWS", body+footer)) newsSent++;
+    usedIds.add(String(c.id));
   }
-  console.log(`\nposted ${sent} of ${chosen.length} chosen`);
-  if(chosen.length>0 && sent===0){
-    console.log("[alert] news writing produced 0 posts this run (LLM/key likely broken)");
-    if(!DRY){ try{ await tgSend("⚠️ هشدار سیستم دسک والکس\n\nاین اجرا با وجود وجود خبر، هیچ خبری با هوش مصنوعی نوشته و ارسال نشد. احتمالاً کلید یا نام مدل LLM مشکل دارد. لطفاً بررسی شود."); }catch(e){ console.log("[alert send failed]",e.message); } }
+  console.log(`news posted ${newsSent} of ${chosen.length}`);
+
+  // 🚨 pump/dump: one short post, up to 2 moves (window = time since last slot)
+  await send("PUMP/DUMP", await pumpDumpPost(morning?18:6));
+
+  // 🧭 market analysis (folds global + stablecoin + fear&greed data)
+  await send("MARKET ANALYSIS", await marketAnalysisPost());
+
+  // 📊 morning only: once-daily Wallex profit/loss (24h)
+  if(morning){
+    const stateF=path.join(ROOT,"telegram","state","daily.json");
+    const today=tehranYmd(Date.now());
+    let st={};try{st=JSON.parse(fs.readFileSync(stateF,"utf8"));}catch{}
+    if(ignoreSeen || st.lastProfitLoss!==today){
+      const pp=await pricePosts();
+      if(pp[1]) await send("PROFIT/LOSS", pp[1]);
+      if(!DRY && !ignoreSeen){ try{fs.mkdirSync(path.dirname(stateF),{recursive:true});fs.writeFileSync(stateF,JSON.stringify({lastProfitLoss:today,ts:Date.now()}));}catch(e){console.log("[daily] state save failed",e.message);} }
+    } else console.log(`[profit/loss] already sent today (${today}), skip`);
   }
 
+  // health alert if news totally failed
+  if(chosen.length>0 && newsSent===0 && !DRY){
+    try{ await tgSend("⚠️ هشدار سیستم دسک والکس\n\nاین اجرا هیچ خبری با هوش مصنوعی نوشته و ارسال نشد. احتمالاً کلید یا مدل LLM مشکل دارد."); }catch(e){ console.log("[alert send failed]",e.message); }
+  }
+
+  // update seen-state
   for(const it of all){(seen[it.src]||=[]);if(!seen[it.src].includes(String(it.id)))seen[it.src].unshift(String(it.id));seen[it.src]=seen[it.src].slice(0,200);}
   if(!DRY&&!ignoreSeen)saveSeen(seen);
-  console.log("done"+(DRY?" (dry)":ignoreSeen?" (ignore-seen, not saved)":""));
+  console.log("done"+(DRY?" (dry)":ignoreSeen?" (ignore-seen)":""));
 })();
